@@ -1,7 +1,9 @@
 //! Read immutable Git objects. No checkout, filters or hooks. LFS pointer blobs
 //! are smudged from the local LFS cache so reads return real content; when the
 //! object is not downloaded the read reports `LFS_CONTENT_UNAVAILABLE` instead of
-//! returning the pointer. Submodules (gitlinks) are still not followed.
+//! returning the pointer. Submodule (gitlink) commits are fetched into the object
+//! store and resolved to their trees so submodule content reads like an ordinary
+//! directory.
 use okf_application::{
     BundleBinding, BundleReader, CredentialRef, Entry, GitRevision, Listing, RequestControl,
     ResourceMetadata, ScanBudget,
@@ -627,11 +629,34 @@ impl Git {
             kind = fields[1].into();
             oid = fields[2].into();
             size = fields[3].parse().unwrap_or(0);
+            if kind == "commit" {
+                // gitlink (submodule): resolve the recorded commit to its tree
+                // so the submodule can be traversed like an ordinary directory.
+                let tree = text(run(
+                    root,
+                    &["rev-parse", "--verify", &format!("{oid}^{{tree}}")],
+                    256,
+                    control,
+                )?)?
+                .trim()
+                .to_owned();
+                if !matches!(tree.len(), 40 | 64) || !tree.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(Error::new(
+                        "GIT_OBJECT_UNAVAILABLE",
+                        "submodule content unavailable",
+                        5,
+                    ));
+                }
+                kind = "tree".into();
+                oid = tree;
+                size = 0;
+            }
         }
         Ok(Some((oid, kind, size)))
     }
 
-    /// HTTPS only; no interactive prompts, repository hooks or recursive submodules.
+    /// HTTPS/SSH only; no interactive prompts or repository hooks. Submodule
+    /// objects are fetched best-effort after the superproject fetch.
     pub fn fetch_bounded(
         root: &Path,
         remote: &str,
@@ -706,6 +731,24 @@ impl Git {
         // Best-effort LFS download for the fetched ref; the Git objects are
         // already present, so LFS failure does not invalidate the fetch.
         Self::fetch_lfs(root, remote, &destination, control, max_bytes);
+
+        // Best-effort submodule fetch: gitlink objects must be present for
+        // submodule content to resolve. The Git objects are already fetched, so
+        // submodule failure does not invalidate the binding.
+        let commit = text(run(
+            root,
+            &["rev-parse", "--verify", &destination],
+            256,
+            control,
+        )?)?;
+        Self::fetch_submodules(
+            root,
+            remote,
+            commit.trim(),
+            control,
+            max_bytes,
+            cred_token.as_deref(),
+        );
         Ok(destination)
     }
 
@@ -735,6 +778,70 @@ impl Git {
         );
     }
 
+    /// Fetch submodule (gitlink) objects into the superproject object store so
+    /// submodule content resolves to trees. Best-effort: submodule fetch
+    /// failures do not invalidate the superproject fetch. Only submodules
+    /// declared in `.gitmodules` with resolvable URLs are fetched, under the
+    /// same HTTPS/SSH transport restrictions as the superproject fetch.
+    pub fn fetch_submodules(
+        root: &Path,
+        remote: &str,
+        commit: &str,
+        control: &RequestControl,
+        max_bytes: u64,
+        credential: Option<&str>,
+    ) {
+        let urls = match submodule_urls(root, commit, control) {
+            Ok(urls) => urls,
+            Err(_) => return,
+        };
+        if urls.is_empty() {
+            return;
+        }
+        let data = match run(
+            root,
+            &["ls-tree", "-r", "-z", commit],
+            8 * 1024 * 1024,
+            control,
+        ) {
+            Ok(data) => data,
+            Err(_) => return,
+        };
+        for record in String::from_utf8_lossy(&data).split('\0') {
+            if record.is_empty() {
+                continue;
+            }
+            let (header, path) = match record.split_once('\t') {
+                Some(parts) => parts,
+                None => continue,
+            };
+            let fields: Vec<_> = header.split_whitespace().collect();
+            if fields.len() < 3 || fields[0] != "160000" {
+                continue;
+            }
+            let submodule_oid = fields[2];
+            let Some(submodule_url) = urls.get(path) else {
+                continue;
+            };
+            let resolved = resolve_submodule_url(remote, submodule_url);
+            let _ = run_bounded(
+                root,
+                &[
+                    "fetch",
+                    "--depth=1",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--no-write-fetch-head",
+                    &resolved,
+                    submodule_oid,
+                ],
+                65536,
+                control,
+                Some(max_bytes),
+                credential,
+            );
+        }
+    }
     pub fn init(root: &Path, control: &RequestControl) -> Result<()> {
         std::fs::create_dir_all(root).map_err(Error::io)?;
         run(root, &["init", "--bare", "--template="], 65536, control)?;
@@ -846,10 +953,10 @@ impl Git {
 }
 
 fn check_mode(mode: &str) -> Result<()> {
-    if !matches!(mode, "040000" | "100644" | "100755") {
+    if !matches!(mode, "040000" | "100644" | "100755" | "160000") {
         return Err(Error::new(
             "GIT_UNSUPPORTED_ENTRY",
-            "symlinks and submodules are not consumed",
+            "symlinks are not consumed",
             4,
         ));
     }
@@ -949,6 +1056,107 @@ fn smudge_lfs(
     text(content)
 }
 
+/// Read the `path -> url` mapping declared in a commit's `.gitmodules`. Returns
+/// an empty map when the file is absent or declares no submodules.
+fn submodule_urls(
+    root: &Path,
+    commit: &str,
+    control: &RequestControl,
+) -> Result<HashMap<String, String>> {
+    let data = run(
+        root,
+        &[
+            "config",
+            "--blob",
+            &format!("{commit}:.gitmodules"),
+            "-z",
+            "--list",
+        ],
+        2 * 1024 * 1024,
+        control,
+    )?;
+    let mut name_to_path = HashMap::new();
+    let mut name_to_url = HashMap::new();
+    for entry in String::from_utf8_lossy(&data).split('\0') {
+        if entry.is_empty() {
+            continue;
+        }
+        let (key, value) = match entry.split_once('\n') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        let parts: Vec<_> = key.split('.').collect();
+        if parts.len() != 3 || parts[0] != "submodule" {
+            continue;
+        }
+        match parts[2] {
+            "path" => {
+                name_to_path.insert(parts[1].to_owned(), value.to_owned());
+            }
+            "url" => {
+                name_to_url.insert(parts[1].to_owned(), value.to_owned());
+            }
+            _ => {}
+        }
+    }
+    let mut result = HashMap::new();
+    for (name, url) in name_to_url {
+        if let Some(path) = name_to_path.remove(&name) {
+            result.insert(path, url);
+        }
+    }
+    Ok(result)
+}
+
+/// Resolve a submodule URL declared in `.gitmodules`. Absolute URLs and
+/// absolute paths are used as-is; relative URLs (e.g. `../name`) are resolved
+/// against the superproject remote's directory.
+fn resolve_submodule_url(remote: &str, submodule_url: &str) -> String {
+    if submodule_url.contains("://") || submodule_url.starts_with('/') {
+        return submodule_url.to_owned();
+    }
+    // Relative URLs resolve against the superproject remote treated as a
+    // directory, matching git's `submodule update` behavior (the last path
+    // component of the remote is popped by a leading `../`).
+    let joined = if remote.ends_with('/') {
+        format!("{remote}{submodule_url}")
+    } else {
+        format!("{remote}/{submodule_url}")
+    };
+    normalize_relative(&joined)
+}
+
+/// Collapse `.` and `..` segments in a URL or path while preserving the scheme
+/// (`://`), authority and leading slash.
+fn normalize_relative(url: &str) -> String {
+    let (prefix, path) = match url.find("://") {
+        Some(i) => {
+            let rest = &url[i + 3..];
+            match rest.find('/') {
+                Some(j) => (url[..i + 3 + j].to_owned(), rest[j..].to_owned()),
+                None => (url.to_owned(), String::new()),
+            }
+        }
+        None => (String::new(), url.to_owned()),
+    };
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            segment => parts.push(segment),
+        }
+    }
+    let joined = parts.join("/");
+    if absolute {
+        format!("{prefix}/{joined}")
+    } else {
+        format!("{prefix}{joined}")
+    }
+}
 impl BundleReader for Git {
     fn probe(&self, binding: &BundleBinding) -> Result<()> {
         let control =
@@ -1022,7 +1230,7 @@ impl BundleReader for Git {
                 return Err(Error::new("GIT_ERROR", "invalid tree record", 5));
             }
             check_mode(fields[0])?;
-            let is_dir = fields[1] == "tree";
+            let is_dir = fields[1] == "tree" || fields[1] == "commit";
             if !is_dir && !name.ends_with(".md") {
                 continue;
             }
@@ -1138,6 +1346,43 @@ mod tests {
         // sha1 pointers are also recognized.
         let sha1 = lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha1:0123456789abcdef0123456789abcdef01234567\nsize 7\n").unwrap();
         assert_eq!(sha1.size, 7);
+    }
+
+    #[test]
+    fn normalize_relative_collapses_dot_segments() {
+        assert_eq!(normalize_relative("/a/b/../c"), "/a/c");
+        assert_eq!(normalize_relative("/a/b/./c"), "/a/b/c");
+        assert_eq!(
+            normalize_relative("https://host.com/owner/../sub"),
+            "https://host.com/sub"
+        );
+        assert_eq!(
+            normalize_relative("https://host.com/owner/repo.git/../sub"),
+            "https://host.com/owner/sub"
+        );
+    }
+
+    #[test]
+    fn resolve_submodule_url_keeps_absolute_and_resolves_relative() {
+        assert_eq!(
+            resolve_submodule_url(
+                "https://github.com/owner/repo.git",
+                "https://example.com/sub.git"
+            ),
+            "https://example.com/sub.git"
+        );
+        assert_eq!(
+            resolve_submodule_url("https://github.com/owner/repo.git", "/abs/path"),
+            "/abs/path"
+        );
+        assert_eq!(
+            resolve_submodule_url("https://github.com/owner/repo.git", "../sub"),
+            "https://github.com/owner/sub"
+        );
+        assert_eq!(
+            resolve_submodule_url("/tmp/sm/super-remote", "../sub"),
+            "/tmp/sm/sub"
+        );
     }
 
     #[test]

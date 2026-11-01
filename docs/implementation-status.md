@@ -27,7 +27,7 @@
 - `Attested Computation` 检查字段形状、计算正文及包根相对声明资源的存在性与文件类型；外部 URI 不访问，计算执行与 Receipt 核验属于独立后续能力。
 - 截止时间和取消在检查点生效，不能强制中断已阻塞的系统 I/O、数据库操作或序列化。
 - 配置采用系统文件锁，进程异常退出会释放所有权，锁文件本身保留。
-- Git 远端支持无交互的 HTTPS（含私有凭据引用）与 SSH 获取，fetch 后 best-effort 下载 LFS 对象（需 git-lfs）；读取时从本地 LFS 缓存 smudge LFS 指针以返回真实内容，对象未下载时报 `LFS_CONTENT_UNAVAILABLE`；不提供 submodule 递归获取。Git 对象缓存支持占用查询、写入预算及保留历史对象的压缩；暂不删除历史版本，也不限制精确网络传输字节。
+- Git 远端支持无交互的 HTTPS（含私有凭据引用）与 SSH 获取，fetch 后 best-effort 下载 LFS 对象（需 git-lfs）并递归获取 submodule（gitlink）对象；读取时从本地 LFS 缓存 smudge LFS 指针以返回真实内容，对象未下载时报 `LFS_CONTENT_UNAVAILABLE`。Git 对象缓存支持占用查询、写入预算及保留历史对象的压缩；暂不删除历史版本，也不限制精确网络传输字节。
 - 上下文返回确定性原文窗口，并不生成答案或保证语义相关；已提供确定性检索证据任务集，真实 Agent 答案质量评测仍需独立进行。
 
 参数、分页、故障处理与覆盖状态见 [CLI 参考](cli-contract.md)；结构、元数据与正文规则及其规范依据见 [OKF 检查矩阵](okf-validation.md)。
@@ -66,6 +66,13 @@ Git 测试覆盖固定提交读取、刷新与对象类型限制；索引测试�
 - `read` 识别 Git LFS 指针（`version https://git-lfs.github.com/spec/v1` + `oid sha256|sha1` + `size`），从本地缓存（bare `<root>/lfs/objects`、非 bare `<root>/.git/lfs/objects`）读取对象原文；对象缺失返回 `LFS_CONTENT_UNAVAILABLE`（7），不触发网络下载、不返回指针占位文本。
 - 读取输出仍受单文件 `max` 字节上限约束；LFS 对象超过上限返回 `DOCUMENT_TOO_LARGE`。
 - 验证：`cargo test --workspace` 通过（新增指针解析单测 + 集成测试，git-lfs 缺失时集成测试跳过）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
+
+### 2026-11-01：submodule（gitlink）递归获取与读取
+
+- `check_mode` 现接受 `160000`（gitlink）；`object` 下降时把 gitlink 的 commit 解析为 tree，`list` 把 gitlink 当作目录，`read` 能读到 submodule 内文件。
+- fetch 后解析 `.gitmodules`（`git config --blob <commit>:.gitmodules`）得到 `path`/`url`，用 `git ls-tree -r` 找 gitlink，逐个 `git fetch` submodule 对象到托管仓库对象库；best-effort，沿用 HTTPS/SSH 传输限制。
+- 相对 submodule URL 按 superproject 远端（当作目录）解析；submodule 对象缺失时读取报 `GIT_OBJECT_UNAVAILABLE`。
+- 验证：`cargo test --workspace --all-targets --locked` 通过（新增相对 URL 解析/规范化单测 + gitlink 读取集成测试）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
 
 ### 2026-10-31：图片引用、HTML 锚点与外部链接
 
