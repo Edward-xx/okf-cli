@@ -318,6 +318,22 @@ fn validate_object_metadata(metadata: std::fs::Metadata) -> Result<std::fs::Meta
 
 fn check_storage(root: &Path, limit: u64, control: &RequestControl) -> Result<u64> {
     let mut pending = vec![root.join("objects")];
+    // LFS objects live outside the Git object store; include them so the
+    // storage budget covers the whole managed repository. A fresh repository
+    // has no LFS store, so missing directories are skipped (never treated as
+    // an error) and symbolic links are not followed.
+    for extra in [
+        root.join("lfs").join("objects"),
+        root.join(".git").join("lfs").join("objects"),
+    ] {
+        if extra
+            .symlink_metadata()
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
+            pending.push(extra);
+        }
+    }
     let mut bytes = 0u64;
     let mut entries = 0;
     while let Some(path) = pending.pop() {
@@ -357,6 +373,20 @@ fn check_storage(root: &Path, limit: u64, control: &RequestControl) -> Result<u6
         }
     }
     Ok(bytes)
+}
+
+fn git_lfs_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new(std::env::var_os("OKF_GIT").unwrap_or_else(|| "git".into()))
+            .args(["lfs", "version"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 fn text(bytes: Vec<u8>) -> Result<String> {
@@ -670,8 +700,38 @@ impl Git {
                 ));
             }
         }
+        // Best-effort LFS download for the fetched ref; the Git objects are
+        // already present, so LFS failure does not invalidate the fetch.
+        Self::fetch_lfs(root, remote, &destination, control, max_bytes);
         Ok(destination)
     }
+
+    /// Download LFS objects for a fetched ref. Best-effort: the Git objects have
+    /// already been fetched, so LFS failure does not invalidate the fetch; reads
+    /// of LFS pointers report `LFS_CONTENT_UNAVAILABLE` when objects are absent.
+    /// LFS uses its own HTTP batch protocol, so the Git `--credential` bearer
+    /// header is not applied here. Exposed for direct testing with a local
+    /// `file://` LFS endpoint that the fetch URL validator would otherwise reject.
+    pub fn fetch_lfs(
+        root: &Path,
+        remote: &str,
+        destination: &str,
+        control: &RequestControl,
+        max_bytes: u64,
+    ) {
+        if !git_lfs_available() {
+            return;
+        }
+        let _ = run_bounded(
+            root,
+            &["lfs", "fetch", remote, destination],
+            65536,
+            control,
+            Some(max_bytes),
+            None,
+        );
+    }
+
     pub fn init(root: &Path, control: &RequestControl) -> Result<()> {
         std::fs::create_dir_all(root).map_err(Error::io)?;
         run(root, &["init", "--bare", "--template="], 65536, control)?;

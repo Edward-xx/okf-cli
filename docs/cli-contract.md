@@ -114,6 +114,8 @@
 
 SSH 仓库通过 `ssh://` 或 `user@host:path` 形式的 `--url` 获取，鉴权由系统 Git 与用户 `~/.ssh/config`（SSH 密钥、代理）处理；`--credential` 仅适用于 HTTPS。
 
+`bundle add`/`bundle refresh` 在 Git fetch 成功后，若本机已安装 git-lfs，会以 best-effort 方式运行 `git lfs fetch` 下载该提交引用的 LFS 对象到托管仓库的 `lfs/objects` 缓存；失败（未安装 git-lfs、远端无 LFS 端点或网络中断）不影响 Git 绑定发布。LFS 传输使用独立的 HTTP batch 协议，`--credential`（Git HTTP 鉴权）不适用于 LFS。
+
 `--max-fetch-bytes` 承诺单次 fetch 新接收对象的对象字节和（fetch 前后 `cat-file --batch-all-objects` 差集），与采样的 `--max-git-bytes` 存储配额相互独立；超限返回 `GIT_FETCH_LIMIT`（7）并保留旧绑定。它计量对象字节，不含 TLS 与传输开销。
 
 `bundle cache NAME --gc` 显式回收历史与不可达对象：先为所有仍被绑定引用的提交建立临时 pin ref，删除不再指向存活提交的临时 fetch ref，再执行 `git gc --prune=now`。默认不自动过期，清理不影响仍使用的提交。

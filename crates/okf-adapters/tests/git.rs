@@ -212,3 +212,74 @@ fn remote_url_validation_accepts_ssh_and_rejects_embedded_credentials() {
         assert_eq!(err.code, "INVALID_REMOTE", "{remote}");
     }
 }
+
+fn git_lfs_available() -> bool {
+    Command::new(std::env::var_os("OKF_GIT").unwrap_or_else(|| "git".into()))
+        .args(["lfs", "version"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn count_lfs_objects(root: &Path) -> usize {
+    let base = root.join("lfs").join("objects");
+    if !base.is_dir() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut stack = vec![base];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn fetch_lfs_downloads_objects_for_the_fetched_ref() {
+    if !git_lfs_available() {
+        eprintln!("skipping: git-lfs not installed");
+        return;
+    }
+    let source = tempfile::tempdir().unwrap();
+    git(source.path(), &["init", "--initial-branch=main"]);
+    git(source.path(), &["lfs", "install", "--local"]);
+    git(source.path(), &["lfs", "track", "*.bin"]);
+    let content = vec![b'x'; 50_000];
+    fs::write(source.path().join("big.bin"), &content).unwrap();
+    git(source.path(), &["add", ".gitattributes", "big.bin"]);
+    git(source.path(), &["commit", "-m", "lfs"]);
+    // A bare "server" holds the LFS objects, simulating the LFS endpoint.
+    let server = tempfile::tempdir().unwrap();
+    let server_path = server.path().to_string_lossy().into_owned();
+    git(server.path(), &["init", "--bare"]);
+    git(source.path(), &["remote", "add", "origin", &server_path]);
+    git(source.path(), &["push", "-q", "origin", "main"]);
+    git(source.path(), &["lfs", "push", "origin", "main"]);
+    assert_eq!(count_lfs_objects(server.path()), 1);
+    // A destination bare repository fetches the commit but not the LFS objects.
+    let dest = tempfile::tempdir().unwrap();
+    git(dest.path(), &["init", "--bare"]);
+    git(
+        dest.path(),
+        &["fetch", "-q", &server_path, "main:refs/heads/main"],
+    );
+    assert_eq!(count_lfs_objects(dest.path()), 0);
+    // fetch_lfs downloads the LFS object into the destination cache.
+    Git::fetch_lfs(
+        dest.path(),
+        &format!("file://{server_path}"),
+        "refs/heads/main",
+        &control(),
+        u64::MAX,
+    );
+    assert_eq!(count_lfs_objects(dest.path()), 1);
+}

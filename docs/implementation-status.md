@@ -27,7 +27,7 @@
 - `Attested Computation` 检查字段形状、计算正文及包根相对声明资源的存在性与文件类型；外部 URI 不访问，计算执行与 Receipt 核验属于独立后续能力。
 - 截止时间和取消在检查点生效，不能强制中断已阻塞的系统 I/O、数据库操作或序列化。
 - 配置采用系统文件锁，进程异常退出会释放所有权，锁文件本身保留。
-- Git 远端支持无交互的 HTTPS（含私有凭据引用）与 SSH 获取；不提供 submodule 或 LFS 下载。Git 对象缓存支持占用查询、写入预算及保留历史对象的压缩；暂不删除历史版本，也不限制精确网络传输字节。
+- Git 远端支持无交互的 HTTPS（含私有凭据引用）与 SSH 获取，fetch 后 best-effort 下载 LFS 对象（需 git-lfs）；不提供 submodule 递归获取。Git 对象缓存支持占用查询、写入预算及保留历史对象的压缩；暂不删除历史版本，也不限制精确网络传输字节。
 - 上下文返回确定性原文窗口，并不生成答案或保证语义相关；已提供确定性检索证据任务集，真实 Agent 答案质量评测仍需独立进行。
 
 参数、分页、故障处理与覆盖状态见 [CLI 参考](cli-contract.md)；结构、元数据与正文规则及其规范依据见 [OKF 检查矩阵](okf-validation.md)。
@@ -47,6 +47,13 @@ Git 测试覆盖固定提交读取、刷新与对象类型限制；索引测试�
 符号链接、Windows Junction、循环目录和大小写碰撞应在适用平台验证。发布验收使用优化构建，核对发行包与文件哈希，并在 PATH 不含编译工具的环境中执行解压后二进制。CI 与打包工作流在 Windows、Linux、macOS 上共用交付验收入口。
 
 ## 最近验证
+
+### 2026-11-01：fetch 时 LFS 对象下载
+
+- `bundle add`/`bundle refresh` 在 Git fetch 成功后，若本机已安装 git-lfs，best-effort 运行 `git lfs fetch` 下载该提交的 LFS 对象到托管仓库 `lfs/objects` 缓存；失败不使 Git 绑定失效。
+- 存储预算 `--max-git-bytes` 现覆盖 LFS 对象目录（`objects/` 与 `lfs/objects`、`.git/lfs/objects` 一并计入），超限中断下载、保留已获取对象。
+- LFS 使用独立 HTTP batch 协议，`--credential` 不适用于 LFS。
+- 验证：`cargo test --workspace --all-targets --locked` 通过（新增本地 `file://` LFS 端点集成测试，git-lfs 缺失时跳过）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
 
 ### 2026-10-31：图片引用、HTML 锚点与外部链接
 
