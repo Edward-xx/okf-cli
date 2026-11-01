@@ -294,3 +294,47 @@ fn fetch_lfs_downloads_objects_for_the_fetched_ref() {
     );
     assert_eq!(count_lfs_objects(dest.path()), 1);
 }
+
+#[test]
+fn lfs_pointer_reads_real_content_when_cached_and_reports_when_missing() {
+    if !git_lfs_available() {
+        eprintln!("skipping: git-lfs not installed");
+        return;
+    }
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "--initial-branch=main"]);
+    git(repo.path(), &["lfs", "install", "--local"]);
+    git(repo.path(), &["lfs", "track", "*.bin"]);
+    let content = "---\ntype: Note\n---\nLFS body\n".repeat(1000);
+    fs::write(repo.path().join("doc.bin"), &content).unwrap();
+    git(repo.path(), &["add", ".gitattributes", "doc.bin"]);
+    git(repo.path(), &["commit", "-m", "lfs"]);
+    // The committed blob is now a placeholder pointer, not the content.
+    let pointer = git(repo.path(), &["cat-file", "blob", "HEAD:doc.bin"]);
+    assert!(pointer.starts_with("version https://git-lfs.github.com/spec/v1"));
+    let b = BundleBinding {
+        id: "lfs".into(),
+        name: "lfs".into(),
+        kind: "git".into(),
+        root: repo.path().to_string_lossy().into_owned(),
+        scope: "project".into(),
+        git: Some(Git::pin(repo.path(), "HEAD", "", &control()).unwrap()),
+    };
+    // Cached object -> real content is returned, not the pointer.
+    assert_eq!(
+        Git.read(&b, "doc.bin", content.len() + 1, &control())
+            .unwrap(),
+        content
+    );
+    // Missing object -> clear signal, never the pointer text.
+    let objects = repo.path().join(".git/lfs/objects");
+    let backup = repo.path().join("lfs-objects-backup");
+    fs::rename(&objects, &backup).unwrap();
+    assert_eq!(
+        Git.read(&b, "doc.bin", content.len() + 1, &control())
+            .unwrap_err()
+            .code,
+        "LFS_CONTENT_UNAVAILABLE"
+    );
+    fs::rename(&backup, &objects).unwrap();
+}

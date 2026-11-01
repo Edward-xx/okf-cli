@@ -20,7 +20,7 @@
 
 验收：不泄露凭据，失败保留绑定，清理不影响仍使用的提交。现有对象预算采用采样检查，不作精确网络字节承诺；`--max-fetch-bytes` 提供精确对象字节承诺（不含 wire 层开销）。
 
-LFS 对象下载已实现（fetch 后 best-effort `git lfs fetch`，需 git-lfs）；下一步是 submodule 递归获取（需 `.gitmodules` 解析、递归凭据与预算语义）。
+LFS 对象下载已实现（fetch 后 best-effort `git lfs fetch`，需 git-lfs）；LFS 指针读取也已实现（读取时从本地缓存 smudge，对象缺失报 `LFS_CONTENT_UNAVAILABLE`）。下一步是 submodule 递归获取（需 `.gitmodules` 解析、递归凭据与预算语义）。
 
 ## 4. 格式与导航兼容
 
