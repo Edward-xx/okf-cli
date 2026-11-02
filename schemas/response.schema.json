@@ -116,6 +116,7 @@
             "checked",
             "images_included",
             "images_checked",
+            "types",
             "complete"
           ],
           "properties": {
@@ -132,6 +133,13 @@
             "images_checked": {
               "type": "integer",
               "minimum": 0
+            },
+            "types": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
             },
             "complete": {
               "type": "boolean"

@@ -638,6 +638,7 @@ impl App<'_> {
         let mut anchors_skipped = 0;
         let mut attachments_checked = 0;
         let mut images_checked = 0;
+        let mut attachment_types = BTreeSet::new();
         let mut external_links = 0;
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
@@ -829,6 +830,9 @@ impl App<'_> {
                         }
                     } else if link.kind == LinkKind::Image {
                         images_checked += 1;
+                        if let Some(ext) = file_extension(target) {
+                            attachment_types.insert(ext);
+                        }
                         match self.reader.stat(&binding, target, self.control) {
                             Ok(Some(meta)) if !meta.directory => {}
                             Ok(_) => {
@@ -847,6 +851,9 @@ impl App<'_> {
                         }
                     } else if attachments {
                         attachments_checked += 1;
+                        if let Some(ext) = file_extension(target) {
+                            attachment_types.insert(ext);
+                        }
                         match self.reader.stat(&binding, target, self.control) {
                             Ok(Some(meta)) if !meta.directory => {}
                             Ok(_) => {
@@ -905,7 +912,7 @@ impl App<'_> {
             response.data["anchor_check"] = json!({"profile":"headings-v1","complete":checks_complete && anchors_complete,"checked":anchors_checked,"skipped":anchors_skipped});
         }
         if attachments {
-            response.data["attachment_check"] = json!({"scope":"bundle_body_links","complete":checks_complete && attachments_complete && images_complete,"checked":attachments_checked,"images_included":true,"images_checked":images_checked});
+            response.data["attachment_check"] = json!({"scope":"bundle_body_links","complete":checks_complete && attachments_complete && images_complete,"checked":attachments_checked,"images_included":true,"images_checked":images_checked,"types":attachment_types.iter().cloned().collect::<Vec<_>>()});
         }
         response.data["failures"] = json!(failures);
         if let Err(error) = self.control.check() {
@@ -955,6 +962,17 @@ impl App<'_> {
         }
         Ok(response)
     }
+}
+
+/// Lowercased file extension of an attachment target path, without the dot.
+/// Dotfiles (e.g. `.gitignore`) and extensionless names report no type.
+fn file_extension(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let (base, ext) = name.rsplit_once('.')?;
+    if base.is_empty() || ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
 }
 
 fn find_binding<'a>(bindings: &'a [BundleBinding], name: &str) -> Result<&'a BundleBinding> {

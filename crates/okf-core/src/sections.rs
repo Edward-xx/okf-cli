@@ -151,10 +151,58 @@ fn collect_html_anchors(html: &str, anchors: &mut BTreeSet<String>) {
         after = after[1..].trim_start();
         let (value, next) = read_html_attr_value(after);
         if !value.is_empty() {
-            anchors.insert(value);
+            anchors.insert(decode_html_entities(&value));
         }
         rest = next.unwrap_or_default();
     }
+}
+
+/// Decodes the character references that can appear inside `id`/`name`
+/// attribute values, so an anchor is matched against the fragment a browser
+/// would expose (e.g. `id="a&amp;b"` is addressable as `#a&b`). Unknown
+/// references are preserved verbatim.
+fn decode_html_entities(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(pos) = rest.find('&') {
+        out.push_str(&rest[..pos]);
+        let tail = &rest[pos..];
+        let Some(end) = tail.find(';') else {
+            out.push_str(tail);
+            break;
+        };
+        let body = &tail[1..end];
+        let decoded = match body {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some('\u{a0}'),
+            _ => decode_numeric_entity(body),
+        };
+        match decoded {
+            Some(c) => out.push(c),
+            None => out.push_str(&tail[..=end]),
+        }
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_numeric_entity(body: &str) -> Option<char> {
+    let (radix, digits) = if let Some(d) = body
+        .strip_prefix("#x")
+        .or_else(|| body.strip_prefix("#X"))
+    {
+        (16, d)
+    } else {
+        let d = body.strip_prefix('#')?;
+        (10, d)
+    };
+    let code = u32::from_str_radix(digits, radix).ok()?;
+    char::from_u32(code)
 }
 
 fn read_html_attr_value(after: &str) -> (String, Option<&str>) {
@@ -205,6 +253,30 @@ mod tests {
         assert_eq!(
             Sections::parse("# A\n<a id='custom'></a>", 0).contains_anchor("missing"),
             None
+        );
+    }
+
+    #[test]
+    fn html_anchor_values_decode_character_references() {
+        // Named and numeric references in `id`/`name` resolve to the fragment a
+        // browser exposes, so the anchor check is deterministic instead of
+        // inconclusive.
+        assert_eq!(
+            Sections::parse("# A\n<a id='foo&amp;bar'></a>", 0).contains_anchor("foo&bar"),
+            Some(true)
+        );
+        assert_eq!(
+            Sections::parse("# A\n<a name='a&#45;b'></a>", 0).contains_anchor("a-b"),
+            Some(true)
+        );
+        assert_eq!(
+            Sections::parse("# A\n<div id=\"x&#x2D;y\">", 0).contains_anchor("x-y"),
+            Some(true)
+        );
+        // Unknown references stay verbatim rather than guessing.
+        assert_eq!(
+            Sections::parse("# A\n<a id='a&nbsp;b'></a>", 0).contains_anchor("a\u{a0}b"),
+            Some(true)
         );
     }
 }
