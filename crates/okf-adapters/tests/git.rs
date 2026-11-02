@@ -221,6 +221,17 @@ fn git_lfs_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Convert a local path into a `file://` URL accepted by `git lfs fetch` on
+/// every platform. Unix paths already begin with `/`; Windows drive-letter
+/// paths (e.g. `C:\tmp`) need forward slashes and a leading slash.
+fn file_url(path: &Path) -> String {
+    let mut s = path.to_string_lossy().replace('\\', "/");
+    if !s.starts_with('/') {
+        s.insert(0, '/');
+    }
+    format!("file://{s}")
+}
+
 fn count_lfs_objects(root: &Path) -> usize {
     let base = root.join("lfs").join("objects");
     if !base.is_dir() {
@@ -276,7 +287,7 @@ fn fetch_lfs_downloads_objects_for_the_fetched_ref() {
     // fetch_lfs downloads the LFS object into the destination cache.
     Git::fetch_lfs(
         dest.path(),
-        &format!("file://{server_path}"),
+        &file_url(server.path()),
         "refs/heads/main",
         &control(),
         u64::MAX,
