@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 
+from assemble_release import SKILL_FILES
+
 binary = Path(sys.argv[1]).resolve()
 with tempfile.TemporaryDirectory(prefix='okf-install-') as temporary:
     root = Path(temporary)
@@ -36,6 +38,7 @@ with tempfile.TemporaryDirectory(prefix='okf-install-') as temporary:
     assert run('search', '认证', '--bundle', 'book', '--full-text')['page']['returned'] == 1
     run('context', '--query', 'executor.resource', '--bundle', 'book', '--content')
     run('skill', 'install', str(root / 'skill'))
-    expected = Path(__file__).resolve().parents[1] / 'skills/okf-cli/SKILL.md'
-    assert (root / 'skill/SKILL.md').read_bytes() == expected.read_bytes()
+    expected = Path(__file__).resolve().parents[1] / 'skills/okf-cli'
+    for name in SKILL_FILES:
+        assert (root / 'skill' / name).read_bytes() == (expected / name).read_bytes()
 print('Standalone binary smoke passed')

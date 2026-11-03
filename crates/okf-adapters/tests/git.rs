@@ -395,6 +395,22 @@ fn fetch_lfs_downloads_objects_for_the_fetched_ref() {
         &["fetch", "-q", &server_path, "main:refs/heads/main"],
     );
     assert_eq!(count_lfs_objects(dest.path()), 0);
+    // LFS content is optional, but its storage quota must abort publication.
+    let before = Git::cache(dest.path(), false, &control()).unwrap()["object_bytes"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        Git::fetch_lfs(
+            dest.path(),
+            &file_url(server.path()),
+            "refs/heads/main",
+            &control(),
+            before + 1024
+        )
+        .unwrap_err()
+        .code,
+        "GIT_STORAGE_LIMIT"
+    );
     // fetch_lfs downloads the LFS object into the destination cache.
     Git::fetch_lfs(
         dest.path(),
@@ -402,7 +418,8 @@ fn fetch_lfs_downloads_objects_for_the_fetched_ref() {
         "refs/heads/main",
         &control(),
         u64::MAX,
-    );
+    )
+    .unwrap();
     assert_eq!(count_lfs_objects(dest.path()), 1);
 }
 

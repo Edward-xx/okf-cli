@@ -26,6 +26,8 @@ impl Sections {
         let mut current = None;
         let mut title = String::new();
         let mut anchors = BTreeSet::new();
+        let mut html_block_start = None;
+        let mut raw_element = None;
         for (event, range) in Parser::new(&raw[body_start..]).into_offset_iter() {
             match event {
                 Event::Start(Tag::Heading { level, .. }) => {
@@ -68,9 +70,22 @@ impl Sections {
                         });
                     }
                 }
-                Event::Html(html) | Event::InlineHtml(html) => {
+                Event::Start(Tag::HtmlBlock) => {
                     result.custom_html = true;
-                    collect_html_anchors(&html, &mut result.html_anchors);
+                    html_block_start = Some(body_start + range.start);
+                }
+                Event::End(TagEnd::HtmlBlock) => {
+                    if let Some(start) = html_block_start.take() {
+                        collect_html_anchors(
+                            &raw[start..body_start + range.end],
+                            &mut result.html_anchors,
+                            &mut raw_element,
+                        );
+                    }
+                }
+                Event::Html(html) | Event::InlineHtml(html) if html_block_start.is_none() => {
+                    result.custom_html = true;
+                    collect_html_anchors(&html, &mut result.html_anchors, &mut raw_element);
                 }
                 _ => {}
             }
@@ -117,43 +132,109 @@ impl Sections {
 /// Extracts `id` and `name` attribute values from raw HTML fragments, so that
 /// explicit HTML anchors can be resolved for the anchor check without a full
 /// HTML parser. Values are matched for quoted and unquoted forms.
-fn collect_html_anchors(html: &str, anchors: &mut BTreeSet<String>) {
+fn collect_html_anchors(
+    html: &str,
+    anchors: &mut BTreeSet<String>,
+    raw_element: &mut Option<String>,
+) {
     let mut rest = html;
-    while let Some(pos) = rest.find(['i', 'n']) {
-        let candidate = &rest[pos..];
-        let name_len = if candidate.starts_with("id") {
-            2
-        } else if candidate.starts_with("name") {
-            4
-        } else {
-            rest = &rest[pos + 1..];
+    loop {
+        if let Some(tag) = raw_element.as_ref() {
+            let closing = format!("</{tag}");
+            let lower = rest.to_ascii_lowercase();
+            let Some(start) = lower.match_indices(&closing).find_map(|(pos, _)| {
+                rest[pos + closing.len()..]
+                    .chars()
+                    .next()
+                    .filter(|c| c.is_ascii_whitespace() || matches!(c, '>' | '/'))
+                    .map(|_| pos)
+            }) else {
+                return;
+            };
+            let Some(end) = rest[start..].find('>') else {
+                return;
+            };
+            rest = &rest[start + end + 1..];
+            *raw_element = None;
+        }
+        let Some(start) = rest.find('<') else { return };
+        rest = &rest[start + 1..];
+        // Comments, declarations and raw-text elements cannot supply anchors here.
+        // Fail conservatively rather than parsing apparent attributes in their text.
+        if rest.starts_with('!') || rest.starts_with('?') {
+            return;
+        }
+        if rest.starts_with('/') {
+            let Some(end) = rest.find('>') else { return };
+            rest = &rest[end + 1..];
             continue;
-        };
-        // Left boundary: the name must not continue an identifier.
-        if pos > 0 {
-            let prev = rest[..pos].chars().next_back().unwrap();
-            if prev.is_alphanumeric() || matches!(prev, '-' | '_' | ':') {
-                rest = &rest[pos + name_len..];
-                continue;
+        }
+        let tag_end = rest
+            .find(|c: char| c.is_ascii_whitespace() || matches!(c, '/' | '>'))
+            .unwrap_or(rest.len());
+        let tag = &rest[..tag_end];
+        if tag.is_empty() || !tag.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+            return;
+        }
+        let raw_text = [
+            "script",
+            "style",
+            "textarea",
+            "title",
+            "xmp",
+            "iframe",
+            "noembed",
+            "noframes",
+            "plaintext",
+        ]
+        .iter()
+        .any(|name| tag.eq_ignore_ascii_case(name));
+        rest = &rest[tag_end..];
+        let mut found = BTreeSet::new();
+        let mut attributes = BTreeSet::new();
+        loop {
+            let trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+            let separated = trimmed.len() != rest.len();
+            rest = trimmed;
+            if let Some(tail) = rest.strip_prefix('>').or_else(|| rest.strip_prefix("/>")) {
+                anchors.extend(found);
+                rest = tail;
+                break;
+            }
+            if !separated {
+                return;
+            }
+            let end = rest
+                .find(|c: char| c.is_ascii_whitespace() || matches!(c, '=' | '/' | '>'))
+                .unwrap_or(rest.len());
+            let name = &rest[..end];
+            if name.is_empty() || name.contains(['<', '\'', '"']) {
+                return;
+            }
+            if !attributes.insert(name.to_ascii_lowercase()) {
+                return;
+            }
+            rest = &rest[end..];
+            let after_name = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+            if let Some(after_equals) = after_name.strip_prefix('=') {
+                let after_equals =
+                    after_equals.trim_start_matches(|c: char| c.is_ascii_whitespace());
+                let (value, tail) = read_html_attr_value(after_equals);
+                let Some(tail) = tail else { return };
+                if value.is_empty() && !after_equals.starts_with(['\'', '"']) {
+                    return;
+                }
+                if !value.is_empty()
+                    && (name.eq_ignore_ascii_case("id") || name.eq_ignore_ascii_case("name"))
+                {
+                    found.insert(decode_html_entities(&value));
+                }
+                rest = tail;
             }
         }
-        // Right boundary: the name must not continue an identifier.
-        let after_name = &candidate[name_len..];
-        if after_name.chars().next().is_some_and(char::is_alphanumeric) {
-            rest = &rest[pos + name_len..];
-            continue;
+        if raw_text {
+            *raw_element = Some(tag.to_ascii_lowercase());
         }
-        let mut after = after_name.trim_start();
-        if !after.starts_with('=') {
-            rest = after;
-            continue;
-        }
-        after = after[1..].trim_start();
-        let (value, next) = read_html_attr_value(after);
-        if !value.is_empty() {
-            anchors.insert(decode_html_entities(&value));
-        }
-        rest = next.unwrap_or_default();
     }
 }
 
@@ -225,6 +306,34 @@ fn read_html_attr_value(after: &str) -> (String, Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn html_attributes_are_parsed_with_quote_and_tag_boundaries() {
+        for html in [
+            "<div title='id=\"ghost\"'>text</div>",
+            "<div data-id='ghost'>text</div>",
+            "<!-- <a id='ghost'> -->",
+            "<!--\n<a id='ghost'>\n-->",
+            "<script>const value = '<a id=ghost>';</script>",
+            "<div title=\"<a id='ghost'>\">text</div>",
+            "<div id='ghost'broken>",
+            "<div id='real' id='ghost'>",
+            "<script>\nconst value = '<a id=ghost>';\n</script>",
+            "before <script>const value = '<a id=ghost>';</script> after",
+            "<textarea>\n<a id=ghost>\n</textarea>",
+        ] {
+            assert_ne!(
+                Sections::parse(html, 0).contains_anchor("ghost"),
+                Some(true),
+                "{html}"
+            );
+        }
+        let sections =
+            Sections::parse("<a TITLE='id=ghost' ID='real'></a>\n<a name=second></a>", 0);
+        assert_eq!(sections.contains_anchor("real"), Some(true));
+        assert_eq!(sections.contains_anchor("second"), Some(true));
+        assert_ne!(sections.contains_anchor("ghost"), Some(true));
+    }
+
     #[test]
     fn headings_preserve_boundaries_and_ignore_code() {
         let raw = "\u{feff}# ignored frontmatter\r\n# 中文\r\n## **Child** `code`\r\n```\n# fake\n```\n## Child code\ntext\n# End\n";

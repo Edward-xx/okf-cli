@@ -97,11 +97,11 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
                 upload_env.pop('GIT_PROTOCOL', None)
                 command = [git, 'upload-pack', '--stateless-rpc']
                 if self.command == 'GET':
-                    assert parsed.path in ('/repo.git/info/refs', '/sub.git/info/refs')
+                    assert parsed.path in ('/repo.git/info/refs', '/sub.git/info/refs', '/large.git/info/refs')
                     command += ['--advertise-refs']
                 else:
-                    assert parsed.path in ('/repo.git/git-upload-pack', '/sub.git/git-upload-pack')
-                repository = 'sub.git' if parsed.path.startswith('/sub.git/') else 'repo.git'
+                    assert parsed.path in ('/repo.git/git-upload-pack', '/sub.git/git-upload-pack', '/large.git/git-upload-pack')
+                repository = parsed.path.split('/')[1]
                 result = subprocess.run([*command, str(root / 'serve' / repository)], input=body, env=upload_env, capture_output=True, timeout=10)
                 if result.returncode:
                     record('upload_pack_error', code=result.returncode, stderr=result.stderr.decode(errors='replace'))
@@ -217,11 +217,14 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
         git_run('push', str(remote), 'main')
         mode = 'smart'
         env['OKF_TEST_TOKEN'] = 'okf-test-only-token'
-        add += ['--credential', 'env:OKF_TEST_TOKEN']
-        def success(*args):
+        credential_file = root / 'credential.txt'
+        credential_file.write_text(env['OKF_TEST_TOKEN'], encoding='utf-8')
+        credential_file.chmod(0o600)
+        add += ['--credential', 'file:credential.txt']
+        def success(*args, cwd=root):
             global phase
             phase = ' '.join(args[:2])
-            result = subprocess.run([str(binary), '--format', 'json', *args], cwd=root, env=env, capture_output=True, timeout=30)
+            result = subprocess.run([str(binary), '--format', 'json', *args], cwd=cwd, env=env, capture_output=True, timeout=30)
             record('cli', arguments=args, code=result.returncode, stdout=result.stdout.decode(errors='replace'), stderr=result.stderr.decode(errors='replace'))
             assert result.returncode == 0, (args, result.stdout, result.stderr)
             return json.loads(result.stdout)
@@ -237,6 +240,39 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
         for name in sub_urls:
             assert success('read', f'@remote/{name}/note')['data']['document']['text'].replace('\r\n', '\n') == raw
         assert success('read', '@remote/note')['data']['document']['text'].replace('\r\n', '\n') == raw
+        stored = success('bundle', 'show', 'remote')['data']['bundle']['git']['credential']
+        assert Path(stored['path']).is_absolute(), stored
+        child = root / 'child'
+        child.mkdir()
+        success('bundle', 'refresh', 'remote', cwd=child)
+
+        # Main fetch fits, but newly fetched submodule objects exceed the shared quota.
+        large_source = root / 'large-source'
+        large_source.mkdir()
+        def large_git(*args):
+            return subprocess.run([git, '-C', str(large_source), '-c', 'user.name=Fixture',
+                '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', *args],
+                env=env, capture_output=True, check=True)
+        large_git('init', '--initial-branch=main')
+        (large_source / 'payload.bin').write_bytes(os.urandom(131072))
+        (large_source / 'note.md').write_text(raw, encoding='utf-8')
+        large_git('add', '.')
+        large_git('commit', '-m', 'large submodule')
+        large_remote = root / 'serve/large.git'
+        large_git('init', '--bare', '--initial-branch=main', str(large_remote))
+        large_git('push', str(large_remote), 'main')
+        large_commit = large_git('rev-parse', 'HEAD').stdout.decode().strip()
+        with (source / '.gitmodules').open('a', encoding='utf-8') as modules:
+            modules.write(f'[submodule "large"]\n\tpath = large\n\turl = https://localhost:{server.server_port}/large.git\n')
+        git_run('add', '.gitmodules')
+        git_run('update-index', '--add', '--cacheinfo', f'160000,{large_commit},large')
+        git_run('commit', '-m', 'large submodule binding')
+        git_run('push', str(remote), 'main')
+        quota = success('bundle', 'cache', 'remote')['data']['object_bytes'] + 8192
+        run(['bundle', 'refresh', 'remote', '--max-git-bytes', str(quota)], 'GIT_STORAGE_LIMIT', 7)
+        assert success('bundle', 'show', 'remote')['data']['bundle']['git']['commit'] == first
+        first = success('bundle', 'refresh', 'remote')['data']['bundle']['git']['commit']
+        assert success('read', '@remote/large/note')['data']['document']['text'].replace('\r\n', '\n') == raw
         (source / 'note.md').write_text(raw + 'updated\n' + base64.b64encode(os.urandom(payload_bytes)).decode(), encoding='utf-8')
         git_run('add', 'note.md')
         git_run('commit', '-m', 'second')

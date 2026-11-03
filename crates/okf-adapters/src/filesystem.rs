@@ -32,13 +32,28 @@ impl Filesystem {
 
     fn contained(root: &Path, logical: &str) -> Result<PathBuf> {
         logical_path(logical)?;
-        let actual = fs::canonicalize(root.join(logical)).map_err(map_io)?;
-        if !actual.starts_with(root) {
-            return Err(Error::new(
-                "PATH_ESCAPE",
-                "resolved path escapes bundle root",
-                4,
-            ));
+        let mut actual = root.to_path_buf();
+        for part in logical.split('/').filter(|part| !part.is_empty()) {
+            actual.push(part);
+            let link = fs::symlink_metadata(&actual).map_err(map_io)?;
+            let resolved = fs::canonicalize(&actual).map_err(map_io)?;
+            if !resolved.starts_with(root) {
+                return Err(Error::new(
+                    "PATH_ESCAPE",
+                    "resolved path escapes bundle root",
+                    4,
+                ));
+            }
+            if fs::metadata(&resolved).map_err(map_io)?.is_dir()
+                && (link.file_type().is_symlink() || is_reparse_point(&link))
+            {
+                return Err(Error::new(
+                    "DIRECTORY_LINK",
+                    "directory links and junctions are not traversed",
+                    4,
+                ));
+            }
+            actual = resolved;
         }
         Ok(actual)
     }
@@ -231,4 +246,14 @@ fn map_io(e: std::io::Error) -> Error {
         std::io::ErrorKind::PermissionDenied => Error::new("ACCESS_DENIED", e.to_string(), 4),
         _ => Error::io(e),
     }
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0
+}
+#[cfg(not(windows))]
+fn is_reparse_point(_: &fs::Metadata) -> bool {
+    false
 }

@@ -242,6 +242,20 @@ pub struct Card {
     pub expiry: String,
 }
 
+impl Card {
+    /// Search only declared retrieval fields, never JSON keys or derived state.
+    pub fn search_text(&self) -> String {
+        let mut fields = vec![
+            self.id.as_str(),
+            self.title.as_str(),
+            self.description.as_deref().unwrap_or(""),
+            self.kind.as_str(),
+        ];
+        fields.extend(self.tags.iter().map(String::as_str));
+        fields.join("\n").to_lowercase()
+    }
+}
+
 /// A byte budget never cuts inside a UTF-8 scalar value.
 pub fn prefix_end(text: &str, start: usize, budget: usize) -> Result<usize> {
     if start > text.len() || !text.is_char_boundary(start) {

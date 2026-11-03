@@ -541,23 +541,19 @@ impl App<'_> {
                                 continue;
                             }
                         };
-                        let haystack = format!(
-                            "{} {} {} {} {}",
-                            card["id"],
-                            card["title"],
-                            card["description"],
-                            card["tags"],
-                            card["type"]
-                        )
-                        .to_lowercase();
+                        let haystack = serde_json::from_value::<okf_core::Card>(card.clone())
+                            .map_err(Error::io)?
+                            .search_text();
                         if filter.matches(&card) && terms.iter().all(|term| haystack.contains(term))
                         {
                             match_count += 1;
                             if card.to_string().len() > options.budget {
                                 complete = false;
                                 response.issue(&Error::new("CARD_TOO_LARGE", "card exceeds the content budget; increase --budget-bytes or read the file directly", 7), &format!("@{}/{}", binding.name, entry.path));
-                            } else if matches.len() <= options.limit {
+                            } else {
                                 matches.push(card);
+                                matches.sort_by(|a, b| a["ref"].as_str().cmp(&b["ref"].as_str()));
+                                matches.truncate(options.limit + 1);
                             }
                         }
                     }

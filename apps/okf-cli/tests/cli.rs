@@ -548,9 +548,26 @@ fn skill_install_preserves_existing_contents() {
     let path = destination.to_str().unwrap();
     assert_eq!(f.run(&["skill", "install", path]).status.code(), Some(0));
     let skill = destination.join("SKILL.md");
+    let reference = destination.join("references/cli-workflows.md");
+    assert_eq!(
+        fs::read(&reference).unwrap(),
+        include_bytes!("../../../skills/okf-cli/references/cli-workflows.md")
+    );
+    fs::write(&reference, "custom command reference").unwrap();
     fs::write(&skill, "custom skill contents").unwrap();
     assert_eq!(f.run(&["skill", "install", path]).status.code(), Some(5));
     assert_eq!(fs::read_to_string(skill).unwrap(), "custom skill contents");
+    assert_eq!(
+        fs::read_to_string(&reference).unwrap(),
+        "custom command reference"
+    );
+    fs::remove_file(destination.join("SKILL.md")).unwrap();
+    assert_eq!(f.run(&["skill", "install", path]).status.code(), Some(5));
+    assert!(!destination.join("SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(reference).unwrap(),
+        "custom command reference"
+    );
 }
 
 #[test]
@@ -1657,4 +1674,82 @@ fn external_links_are_reported_without_fetching() {
     .unwrap();
     let response = value(&f.run(&["validate", "book"]));
     assert_eq!(response["data"]["link_check"]["external_links"], 2);
+}
+
+#[test]
+fn search_orders_before_limiting_and_matches_only_field_values() {
+    let f = Fixture::new();
+    for name in ["z.md", "y.md", "services/a.md"] {
+        fs::write(f.work.path().join("knowledge").join(name),
+            "---\ntype: Note\ntitle: needle\ndescription: 'quoted \"token\" and C:\\folder'\n---\nordinary body\n").unwrap();
+    }
+    f.bind();
+    let small = value(&f.run(&["search", "needle", "--bundle", "book", "--limit", "1"]));
+    let all = value(&f.run(&["search", "needle", "--bundle", "book", "--limit", "10"]));
+    assert_eq!(small["data"]["items"][0]["ref"], "@book/services/a");
+    assert_eq!(small["data"]["items"][0], all["data"]["items"][0]);
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    for query in ["description", "unverified", "expiry", "null"] {
+        for extra in [
+            vec![],
+            vec!["--full-text"],
+            vec!["--full-text", "--candidate-budget", "10000"],
+        ] {
+            let mut args = vec!["search", query, "--bundle", "book"];
+            args.extend(extra);
+            let result = f.run(&args);
+            assert_eq!(result.status.code(), Some(0));
+            assert_eq!(
+                value(&result)["data"]["items"],
+                serde_json::json!([]),
+                "{args:?}"
+            );
+        }
+    }
+    for query in ["\"token\"", "C:\\folder"] {
+        for extra in [
+            vec![],
+            vec!["--full-text"],
+            vec!["--full-text", "--candidate-budget", "10000"],
+        ] {
+            let mut args = vec!["search", query, "--bundle", "book"];
+            args.extend(extra);
+            assert_eq!(
+                value(&f.run(&args))["data"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3,
+                "{args:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fake_html_anchor_cannot_pass_quality_gate() {
+    let f = Fixture::new();
+    fs::write(
+        f.work.path().join("knowledge/a.md"),
+        "---\ntype: Note\n---\n[link](b.md#ghost)\n",
+    )
+    .unwrap();
+    fs::write(
+        f.work.path().join("knowledge/b.md"),
+        "---\ntype: Note\n---\n<div title='id=\"ghost\"'>text</div>\n",
+    )
+    .unwrap();
+    f.bind();
+    let output = f.run(&[
+        "validate",
+        "book",
+        "--anchor-style",
+        "headings-v1",
+        "--max-warnings",
+        "0",
+    ]);
+    assert_eq!(output.status.code(), Some(7));
+    let data = &value(&output)["data"];
+    assert_eq!(data["anchor_check"]["skipped"], 1);
+    assert_eq!(data["quality_gate"]["passed"], serde_json::Value::Null);
 }

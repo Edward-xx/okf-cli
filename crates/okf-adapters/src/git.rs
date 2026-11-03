@@ -256,6 +256,21 @@ fn run_bounded(
     Ok(bytes)
 }
 
+// Optional content may be unavailable, but request-wide limits still apply.
+fn optional_fetch(result: Result<Vec<u8>>) -> Result<()> {
+    match result {
+        Err(error)
+            if matches!(
+                error.code.as_str(),
+                "GIT_STORAGE_LIMIT" | "GIT_FETCH_LIMIT" | "CANCELLED" | "DEADLINE_EXCEEDED"
+            ) =>
+        {
+            Err(error)
+        }
+        _ => Ok(()),
+    }
+}
+
 fn transport_error(stderr: &str) -> Error {
     let text = stderr.to_ascii_lowercase();
     let (code, message) = if text.contains("returned error: 401")
@@ -729,7 +744,7 @@ impl Git {
             }
         }
         // Optional content fetches do not invalidate the superproject binding.
-        Self::fetch_lfs(root, remote, &destination, control, max_bytes);
+        Self::fetch_lfs(root, remote, &destination, control, max_bytes)?;
 
         let commit = text(run(
             root,
@@ -744,7 +759,8 @@ impl Git {
             control,
             max_bytes,
             cred_token.as_deref(),
-        );
+        )?;
+        check_storage(root, max_bytes, control)?;
         Ok(destination)
     }
 
@@ -760,18 +776,20 @@ impl Git {
         destination: &str,
         control: &RequestControl,
         max_bytes: u64,
-    ) {
+    ) -> Result<()> {
         if !git_lfs_available() {
-            return;
+            return Ok(());
         }
-        let _ = run_bounded(
+        optional_fetch(run_bounded(
             root,
             &["lfs", "fetch", remote, destination],
             65536,
             control,
             Some(max_bytes),
             None,
-        );
+        ))?;
+        check_storage(root, max_bytes, control)?;
+        Ok(())
     }
 
     /// Fetch submodule (gitlink) objects into the superproject object store so
@@ -786,13 +804,13 @@ impl Git {
         control: &RequestControl,
         max_bytes: u64,
         credential: Option<&str>,
-    ) {
+    ) -> Result<()> {
         let urls = match submodule_urls(root, commit, control) {
             Ok(urls) => urls,
-            Err(_) => return,
+            Err(error) => return optional_fetch(Err(error)),
         };
         if urls.is_empty() {
-            return;
+            return Ok(());
         }
         let data = match run(
             root,
@@ -801,7 +819,7 @@ impl Git {
             control,
         ) {
             Ok(data) => data,
-            Err(_) => return,
+            Err(error) => return optional_fetch(Err(error)),
         };
         for record in String::from_utf8_lossy(&data).split('\0') {
             if record.is_empty() {
@@ -820,7 +838,7 @@ impl Git {
                 continue;
             };
             let resolved = resolve_submodule_url(remote, submodule_url);
-            let _ = run_bounded(
+            optional_fetch(run_bounded(
                 root,
                 &[
                     "fetch",
@@ -835,8 +853,10 @@ impl Git {
                 control,
                 Some(max_bytes),
                 submodule_credential(remote, &resolved, credential),
-            );
+            ))?;
+            check_storage(root, max_bytes, control)?;
         }
+        Ok(())
     }
     pub fn init(root: &Path, control: &RequestControl) -> Result<()> {
         std::fs::create_dir_all(root).map_err(Error::io)?;
@@ -1386,6 +1406,24 @@ impl BundleReader for Readers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_downloads_preserve_request_limits() {
+        for code in [
+            "GIT_STORAGE_LIMIT",
+            "GIT_FETCH_LIMIT",
+            "CANCELLED",
+            "DEADLINE_EXCEEDED",
+        ] {
+            assert_eq!(
+                optional_fetch(Err(Error::new(code, "limit", 7)))
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+        assert!(optional_fetch(Err(Error::new("GIT_TRANSPORT_FAILED", "offline", 5))).is_ok());
+    }
 
     #[test]
     fn submodule_tokens_are_limited_to_the_original_https_authority() {

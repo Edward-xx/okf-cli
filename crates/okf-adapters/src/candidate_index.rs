@@ -79,7 +79,7 @@ pub(super) fn publish(
         documents += 1;
     }
     tx.execute(
-        "INSERT INTO candidate_snapshots VALUES(?1,?2,1,?3,?4)",
+        "INSERT INTO candidate_snapshots VALUES(?1,?2,2,?3,?4)",
         params![key, snapshot.generation, documents, postings],
     )
     .map_err(Error::io)?;
@@ -110,7 +110,7 @@ pub(super) fn header_valid(tx: &Transaction<'_>, key: &str, generation: &str) ->
     let Some((stored, version, documents, postings)) = header else {
         return Ok(false);
     };
-    if version != 1 || stored != generation {
+    if version != 2 || stored != generation {
         return Err(corrupt());
     }
     let (actual_docs, actual_postings, concepts): (usize,usize,usize) = tx.query_row(

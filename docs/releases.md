@@ -1,14 +1,38 @@
 # 安装、升级与发行
 
-CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 及以上仅用于开发和打包，已构建的 CLI 无需 Python 或 Rust；读取 Git 知识包仍需要 Git。
+快速安装见 [README](../README.md#安装与构建)，完整源码构建步骤见下文。Python 3.11 及以上仅用于开发和打包，已构建的 CLI 无需 Python 或 Rust；读取 Git 知识包仍需要 Git。
+
+## 源码构建
+
+需要 Rust stable 和 C 编译环境。在仓库根目录执行 `cargo install --locked --path apps/okf-cli` 可安装到 Cargo 的 `bin` 目录；该目录需加入 PATH。
+
+仅构建独立可执行文件时执行：
+
+```sh
+cargo build --release --locked -p okf-cli
+```
+
+产物位于 `target/release/okf`，Windows 下为 `target/release/okf.exe`。使用 `okf build-info --format json` 可离线查看版本、Rust 目标平台和构建来源；开发检查见 [验证入口](verification.md#验证入口)。
+
+### Windows 工具链
+
+Windows 可选择 MSVC 或 GNU 工具链。使用 MSVC 时，需要安装 C++ Build Tools 和 Windows SDK。
+
+使用 GNU 时，将便携式 MinGW GCC（例如 [w64devkit](https://github.com/skeeto/w64devkit)）的 `bin` 目录加入 PATH，然后为当前仓库选择 GNU Rust：
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt,clippy
+rustup override set stable-x86_64-pc-windows-gnu
+cargo install --locked --path apps/okf-cli
+```
 
 ## 下载与安装
 
-当前正式版本为 `v0.1.0`；`v0.1.0-alpha.1` 保留为历史预览版本。正式版沿用预览版的功能，没有数据库格式变更。后续版本仍需按各自迁移说明升级，不承诺任意版本间数据库兼容；升级前请备份运行目录。
+本仓库记录的正式发行基线为 `v0.1.0`；`v0.1.0-alpha.1` 保留为历史预览版本。正式版沿用预览版的功能，没有数据库格式变更。后续版本仍需按各自迁移说明升级，不承诺任意版本间数据库兼容；升级前请备份运行目录。
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
-已发布的 `v0.1.0` 支持本地文件系统和公开 HTTPS Git 知识包；私有仓库认证、SSH、submodule 和 LFS 下载不在本版范围内。当前工作区的后续能力见 [实现状态](implementation-status.md)，不代表已发布附件包含这些改动。确定性检索验收不代表真实 Agent 答案质量已经测量。
+已发布的 `v0.1.0` 支持本地文件系统和公开 HTTPS Git 知识包；私有仓库认证、SSH、submodule 和 LFS 下载不在本版范围内。当前工作区的后续能力见 [实现状态](architecture.md#实现状态)，不代表已发布附件包含这些改动。确定性检索验收不代表真实 Agent 答案质量已经测量。
 
 已发布版本从 [GitHub Releases](https://github.com/coolplayagent/okf-cli/releases) 下载。工作流产物或 Release 草稿不等同于正式发布。
 
@@ -17,6 +41,17 @@ CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 �
 先核对压缩包 SHA-256，再解压。Linux 可使用 `sha256sum -c FILE.zip.sha256`，macOS 可使用 `shasum -a 256 -c FILE.zip.sha256`。Windows 使用 `Get-FileHash FILE.zip -Algorithm SHA256`，与校验文件首列比较。将 `okf` 或 `okf.exe` 放入 PATH 中的目录；Unix 解压后必要时执行 `chmod +x okf`。
 
 执行 `okf --version` 与 `okf build-info --format json` 核对版本和平台。`manifest.json` 记录版本、构建提交、源码是否有未提交修改、tag 和每个打包文件的哈希。构建时没有 Git 时来源字段为 null；正式 tag 包要求来源已知、源码干净且提交匹配。
+
+## 当前源码升级注意事项
+
+以下属于未发布源码变化，不能据此推断现有 `v0.1.0` 附件已包含修复：
+
+- Skill 改为入口与按需命令参考两层：`SKILL.md` 链接 `references/cli-workflows.md`。新构建的 `skill install`、CLI 包和独立 Skill ZIP 均包含两份文件；安装不覆盖任一已有目标。升级请先安装到新目录，再合并定制。旧二进制不会自动获得新参考文件。
+
+- 候选派生数据升级至版本 2，正文数据库仍为 v1，响应策略名仍为 `candidates-v1`。升级后对需要候选检索的知识包重新执行 `okf sync NAME`；普通路径检索和索引原文读取仍可使用。旧程序写入索引后应再次同步，不承诺派生数据双向兼容。
+- 新增绑定将 `file:PATH` 凭据路径保存为绝对路径。已有相对路径不会自动迁移；先按原调用目录确认实际凭据文件，再将绑定中的引用改为绝对路径，避免从其他目录刷新时解析到不同文件。
+
+当前实现范围见 [实现状态](architecture.md#实现状态)，本地修复回归与尚未完成的验收见 [验证记录](verification.md#最近验证)。
 
 ## 升级与回退
 
@@ -44,7 +79,7 @@ python -m pip install -r scripts/requirements-test.txt
 python scripts/check_delivery.py target/release/okf
 ```
 
-Windows 使用 `target/release/okf.exe`。验收范围见 [开发检查](../README.md#开发)，包括索引完整性与修复、有限预算评测，以及解压包的哈希、构建信息、内置 Skill 和独立运行检查。产物位于 `target/dist`，本地开发包允许记录 `source_dirty: true`。
+Windows 使用 `target/release/okf.exe`。验收范围见 [验证入口](verification.md#验证入口)，包括索引完整性与修复、有限预算评测，以及解压包的哈希、构建信息、内置 Skill 和独立运行检查。产物位于 `target/dist`，本地开发包允许记录 `source_dirty: true`。
 
 准备正式版本时，先统一 workspace 版本、Cargo.lock 与变更记录，提交到干净工作区，再创建对应 `vVERSION` tag。带 tag 验收：
 
@@ -55,7 +90,7 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 
 此处 `vVERSION` 为占位符，必须替换成实际版本。提交并创建 tag 后，重新执行上述 Release 构建，再进行带 tag 验收，确保二进制记录的是干净工作区的当前提交。脚本要求 tag、当前 HEAD、二进制构建提交一致，并拒绝版本、平台或内置 Skill 不匹配的包。
 
-打包和解压校验使用显式检查，Python `-O` 模式也会执行。`check_delivery.py` 包含两种模式下的 8 类拒绝场景，覆盖版本、平台、tag、内置 Skill、归档哈希、路径、文件清单和内容哈希。
+打包和解压校验使用显式检查，Python `-O` 模式也会执行。`check_delivery.py` 包含两种模式下的拒绝场景，覆盖版本、平台、tag、内置 Skill、归档哈希及校验文件名、路径、重复条目、文件清单和内容哈希。
 
 ## 发布流程
 
@@ -63,7 +98,7 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 
 每次构建在三平台验收成功后，额外生成 `release-downloads` 工作流产物，包含三个原有 CLI ZIP、`okf-cli-skill-VERSION.zip`、四份对应的 `.zip.sha256`、`release-set.json` 及 `SHA256SUMS`。汇总拒绝缺失或多余的平台包、校验和错误、文件清单不一致、不同提交、脏源码和 tag 不匹配；分支构建也要求所有包来自同一干净提交。`release-set.json` 记录四个下载包的哈希及来源，`SHA256SUMS` 覆盖其他全部附件。下载后可运行 `sha256sum -c SHA256SUMS`（macOS 使用 `shasum -a 256 -c SHA256SUMS`）。这些校验和用于完整性检查，不是发布者签名。
 
-Agent 用户可将独立 Skill ZIP 解压到技能目录，得到 `okf-cli/SKILL.md` 和 `assets/` 下的 Windows x64、Linux x64、macOS ARM64 二进制，无需先安装 Rust、Python 或将 `okf` 加入 PATH。Skill 按宿主平台选择随包二进制，并保留用户项目工作目录。Unix 解压后若执行位丢失，执行 `chmod +x`；Git 和系统运行库要求与 CLI 包相同。`okf skill install` 仍只安装指令文件，完整离线包应直接解压。
+Agent 用户可将独立 Skill ZIP 解压到技能目录，得到 `okf-cli/SKILL.md`、按需命令参考 `references/cli-workflows.md` 和 `assets/` 下的 Windows x64、Linux x64、macOS ARM64 二进制，无需先安装 Rust、Python 或将 `okf` 加入 PATH。Skill 按宿主平台选择随包二进制，并保留用户项目工作目录。Unix 解压后若执行位丢失，执行 `chmod +x`；Git 和系统运行库要求与 CLI 包相同。`okf skill install` 仍只安装指令文件，完整离线包应直接解压。
 
 本地汇总已通过平台验收的三个包（输入目录只放 ZIP 及其 `.sha256`，输出目录必须为空）：
 
@@ -79,7 +114,7 @@ python scripts/assemble_release.py INPUT_DIR OUTPUT_DIR --commit SOURCE_COMMIT
 
 ## 三平台打包实测
 
-2026-10-26 对提交 `ab4f735` 手动执行 [Package binaries](https://github.com/coolplayagent/okf-cli/actions/runs/40263932075)，三平台构建、交付验收与产物上传全部通过。下载后再次核对了三个压缩包及包内文件哈希，manifest 均记录同一提交和干净源码。这是历史工作流产物验收，未创建 tag、Release 草稿或正式版本；不包含该提交之后的功能与发行流程变更。最新验证范围见 [实现状态](implementation-status.md#最近验证)。
+2026-10-26 对提交 `ab4f735` 手动执行 [Package binaries](https://github.com/coolplayagent/okf-cli/actions/runs/40263932075)，三平台构建、交付验收与产物上传全部通过。下载后再次核对了三个压缩包及包内文件哈希，manifest 均记录同一提交和干净源码。这是历史工作流产物验收，未创建 tag、Release 草稿或正式版本；不包含该提交之后的功能与发行流程变更。最新验证范围见 [验证记录](verification.md#最近验证)。
 
 | 产物目标 | 本次二进制的运行库要求 |
 | --- | --- |

@@ -23,11 +23,12 @@ def expect_rejection(script, arguments, message, cwd):
 with tempfile.TemporaryDirectory(prefix='okf-package-negative-') as temporary:
     isolated = Path(temporary)
     (isolated / 'scripts').mkdir()
-    shutil.copyfile(root / 'scripts/package.py', isolated / 'scripts/package.py')
+    for name in ('package.py', 'assemble_release.py'):
+        shutil.copyfile(root / 'scripts' / name, isolated / 'scripts' / name)
     shutil.copyfile(root / 'Cargo.toml', isolated / 'Cargo.toml')
     skill = isolated / 'skills/okf-cli/SKILL.md'
     skill.parent.mkdir(parents=True)
-    shutil.copyfile(root / 'skills/okf-cli/SKILL.md', skill)
+    shutil.copytree(root / 'skills/okf-cli', skill.parent, dirs_exist_ok=True)
     def rejected(message, *arguments):
         expect_rejection(isolated / 'scripts/package.py', [binary, *arguments], message, isolated)
         if (isolated / 'target/dist').exists():
@@ -36,12 +37,12 @@ with tempfile.TemporaryDirectory(prefix='okf-package-negative-') as temporary:
     rejected('tag/workspace version mismatch', '--tag', 'v9999.0.0')
     skill.write_text('stale embedded skill', encoding='utf-8')
     rejected('rebuild binary after changing')
-    shutil.copyfile(root / 'skills/okf-cli/SKILL.md', skill)
+    shutil.copytree(root / 'skills/okf-cli', skill.parent, dirs_exist_ok=True)
     (isolated / 'Cargo.toml').write_text('[workspace.package]\nversion = "9999.0.0"\n', encoding='utf-8')
     rejected('binary/workspace version mismatch')
     archive = isolated / 'invalid.zip'
     for message, files, valid_hash in (
-        ('archive hash mismatch', {}, False),
+        ('archive checksum mismatch', {}, False),
         ('unsafe archive path', {'../escape.txt': 'invalid'}, True),
         ('archive inventory mismatch', {'manifest.json': json.dumps({'sha256': {'missing.txt': '0' * 64}})}, True),
         ('file hash mismatch', {'manifest.json': json.dumps({'sha256': {'file.txt': '0' * 64}}), 'file.txt': 'modified'}, True),
@@ -50,7 +51,15 @@ with tempfile.TemporaryDirectory(prefix='okf-package-negative-') as temporary:
             for name, content in files.items():
                 output.writestr(name, content)
         digest = hashlib.sha256(archive.read_bytes()).hexdigest() if valid_hash else '0' * 64
-        archive.with_suffix('.zip.sha256').write_text(digest, encoding='ascii')
+        archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n', encoding='ascii')
         expect_rejection(root / 'scripts/verify_package.py', [archive], message, isolated)
+    archive.with_suffix('.zip.sha256').write_text(f'{digest}  wrong.zip\n', encoding='ascii')
+    expect_rejection(root / 'scripts/verify_package.py', [archive], 'archive checksum mismatch', isolated)
+    with zipfile.ZipFile(archive, 'w') as output:
+        output.writestr('same.txt', 'first')
+        output.writestr('same.txt', 'second')
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n', encoding='ascii')
+    expect_rejection(root / 'scripts/verify_package.py', [archive], 'duplicate archive entries', isolated)
 print('Package rejects mismatched target, tag, embedded skill and version in normal and optimized Python modes')
 print('Verification rejects corrupt hashes, unsafe paths and mismatched inventories in both Python modes')

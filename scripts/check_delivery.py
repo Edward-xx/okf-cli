@@ -19,6 +19,7 @@ subprocess.run([sys.executable, str(root / 'scripts/evaluate_index_candidates.py
 subprocess.run([sys.executable, str(root / 'scripts/check_upstream.py'), str(root / 'target/verification/upstream-local.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_package.py'), str(binary)], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_git_https.py'), str(binary)], check=True)
+subprocess.run([sys.executable, str(root / 'scripts/check_git_integrity.py'), str(binary)], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate.py'), str(binary), str(root / 'target/verification/retrieval.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_multi_bundle.py'), str(binary), str(root / 'target/verification/multi-bundle.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_budgets.py'), str(binary), str(root / 'target/verification/budgets.json')], check=True)
