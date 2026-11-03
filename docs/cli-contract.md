@@ -243,6 +243,22 @@ fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象�
 | `diagnostics` | 诊断 code、severity、message、path、field 和可选 location |
 | `next` | 建议的后续操作、目标和可选 cursor |
 
+`search` 在 `ok` 或 `partial` 状态下必须返回 `data.mode`，取值为 `metadata` 或 `full_text`。元数据模式还必须返回非空字符串 `query`、字符串 `evaluated_at` 和数组 `items`；无命中或尚未获得结果时数组可为空。响应 Schema 对每个元数据结果要求以下字段：
+
+| 字段 | 结构 |
+| --- | --- |
+| `id`、`type`、`title`、`status`、`bundle_id` | 字符串；`type` 非空，未知概念类型和声明状态继续保留 |
+| `kind` | 固定为 `concept` |
+| `ref` | `@别名/概念ID` 形式的字符串 |
+| `description` | 字符串或 null，不省略 |
+| `tags` | 字符串数组，可为空 |
+| `trust` | `unverified`、`machine-confirmed` 或 `human-reviewed` |
+| `expiry` | `current`、`expired`、`unspecified` 或 `unknown` |
+| `content_sha256` | 64 位小写十六进制 SHA-256 |
+| `upstream_revision` | Git 提交字符串或 null，不省略 |
+
+元数据结果与 `data` 继续允许扩展字段。错误响应不要求成功结果字段；全文条目和其他命令不套用这组元数据卡片约束。Schema 检查字段结构，不证明引用目标存在、哈希对应当前文件或结果语义正确。
+
 文件系统读取视图为 `observed`，上游修订为 null；Git 视图为 `snapshot`，`upstream_revision` 是完整 commit ID。Git 原文、卡片与 cursor 均携带或绑定提交。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。实时命令的 `body`、`graph` 是保守覆盖声明；索引的完整正文覆盖仅描述已发布的索引版本。
 
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
