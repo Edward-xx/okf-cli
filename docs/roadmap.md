@@ -16,11 +16,9 @@
 
 ## 3. Git 远端深化
 
-已实现私有凭据引用（`env:VAR` / `file:PATH`）、SSH 传输（`ssh://` 与 `user@host:path`）、精确传输限制（`--max-fetch-bytes`，对象字节差集核算）与显式历史对象回收（`bundle cache --gc`）。凭据只注入子进程环境，不落盘、不进响应；失败保留旧绑定，清理不影响仍使用的提交。
+HTTPS/SSH、凭据引用、对象字节预算、LFS 下载与校验、直接子模块获取和显式 GC 已实现，详见 [Git 远端实现](git-remote-deepening.md) 与 [CLI 参考](cli-contract.md)。GC 递归保护已下载的嵌套子模块，但获取流程尚不递归下载嵌套子模块。
 
-验收：不泄露凭据，失败保留绑定，清理不影响仍使用的提交。现有对象预算采用采样检查，不作精确网络字节承诺；`--max-fetch-bytes` 提供精确对象字节承诺（不含 wire 层开销）。
-
-LFS 对象下载已实现（fetch 后 best-effort `git lfs fetch`，需 git-lfs）；LFS 指针读取也已实现（读取时从本地缓存 smudge，对象缺失报 `LFS_CONTENT_UNAVAILABLE`）；submodule（gitlink）递归获取也已实现：fetch 后解析 `.gitmodules` 并逐个 fetch submodule 对象，读取时把 gitlink 当作目录遍历。相对 URL 按 superproject 远端解析；submodule 获取为 best-effort，沿用 HTTPS/SSH 传输限制（不跟随本地路径/file://）。
+后续补齐真实 SSH 服务和跨平台传输验证，并评估嵌套子模块下载及 LFS 独立认证需求。保持凭据隔离、失败保留绑定和 GC 后可读性；对象字节预算不等于网络流量上限。
 
 ## 4. 格式与导航兼容
 

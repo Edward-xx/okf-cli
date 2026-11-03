@@ -87,7 +87,9 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
             pass
 
         def do_GET(self):
-            record('request', method=self.command, path=self.path, mode=mode)
+            record('request', method=self.command, path=self.path, mode=mode,
+                   host=self.headers.get('Host'),
+                   fixture_token=self.headers.get('Authorization') == 'Bearer okf-test-only-token')
             if mode == 'smart':
                 parsed = urllib.parse.urlsplit(self.path)
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
@@ -95,11 +97,12 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
                 upload_env.pop('GIT_PROTOCOL', None)
                 command = [git, 'upload-pack', '--stateless-rpc']
                 if self.command == 'GET':
-                    assert parsed.path == '/repo.git/info/refs'
+                    assert parsed.path in ('/repo.git/info/refs', '/sub.git/info/refs')
                     command += ['--advertise-refs']
                 else:
-                    assert parsed.path == '/repo.git/git-upload-pack'
-                result = subprocess.run([*command, str(root / 'serve/repo.git')], input=body, env=upload_env, capture_output=True, timeout=10)
+                    assert parsed.path in ('/repo.git/git-upload-pack', '/sub.git/git-upload-pack')
+                repository = 'sub.git' if parsed.path.startswith('/sub.git/') else 'repo.git'
+                result = subprocess.run([*command, str(root / 'serve' / repository)], input=body, env=upload_env, capture_output=True, timeout=10)
                 if result.returncode:
                     record('upload_pack_error', code=result.returncode, stderr=result.stderr.decode(errors='replace'))
                 result.check_returncode()
@@ -147,6 +150,9 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
     server = TLSServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    other_server = TLSServer(('127.0.0.1', 0), Handler)
+    other_thread = threading.Thread(target=other_server.serve_forever, daemon=True)
+    other_thread.start()
     url = f'https://localhost:{server.server_port}/repo.git'
     add = ['bundle', 'add', 'remote', '--kind', 'git', '--url', url]
 
@@ -192,8 +198,26 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
         (source / 'note.md').write_text(raw, encoding='utf-8')
         git_run('add', '.')
         git_run('commit', '-m', 'first')
+        sub_commit = git_run('rev-parse', 'HEAD').stdout.decode().strip()
+        sub_remote = root / 'serve/sub.git'
+        git_run('init', '--bare', '--initial-branch=main', str(sub_remote))
+        git_run('push', str(sub_remote), 'main')
+        sub_urls = {
+            'same': f'https://localhost:{server.server_port}/sub.git',
+            'host': f'https://127.0.0.1:{server.server_port}/sub.git',
+            'port': f'https://localhost:{other_server.server_port}/sub.git',
+        }
+        (source / '.gitmodules').write_text(''.join(
+            f'[submodule "{name}"]\n\tpath = {name}\n\turl = {url}\n'
+            for name, url in sub_urls.items()), encoding='utf-8')
+        git_run('add', '.gitmodules')
+        for name in sub_urls:
+            git_run('update-index', '--add', '--cacheinfo', f'160000,{sub_commit},{name}')
+        git_run('commit', '-m', 'submodules')
         git_run('push', str(remote), 'main')
         mode = 'smart'
+        env['OKF_TEST_TOKEN'] = 'okf-test-only-token'
+        add += ['--credential', 'env:OKF_TEST_TOKEN']
         def success(*args):
             global phase
             phase = ' '.join(args[:2])
@@ -202,9 +226,19 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
             assert result.returncode == 0, (args, result.stdout, result.stderr)
             return json.loads(result.stdout)
         first = success(*add)['data']['bundle']['git']['commit']
+        for host, expected in [(f'localhost:{server.server_port}', True),
+                               (f'127.0.0.1:{server.server_port}', False),
+                               (f'localhost:{other_server.server_port}', False)]:
+            requests = [e for e in events if e['event'] == 'request'
+                        and e.get('mode') == 'smart' and e.get('host') == host
+                        and e['path'].startswith('/sub.git/')]
+            assert requests, ('submodule was not requested', host)
+            assert all(e['fixture_token'] == expected for e in requests), requests
+        for name in sub_urls:
+            assert success('read', f'@remote/{name}/note')['data']['document']['text'].replace('\r\n', '\n') == raw
         assert success('read', '@remote/note')['data']['document']['text'].replace('\r\n', '\n') == raw
         (source / 'note.md').write_text(raw + 'updated\n' + base64.b64encode(os.urandom(payload_bytes)).decode(), encoding='utf-8')
-        git_run('add', '.')
+        git_run('add', 'note.md')
         git_run('commit', '-m', 'second')
         git_run('push', str(remote), 'main')
         for mode, expected in [(403, 'GIT_AUTH_FAILED'), ('disconnect', 'GIT_TRANSPORT_FAILED')]:
@@ -221,14 +255,24 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
         assert success('bundle', 'show', 'remote')['data']['bundle']['git']['commit'] == first
         assert success('bundle', 'refresh', 'remote')['data']['bundle']['git']['commit'] != first
         success('bundle', 'cache', 'remote', '--compact')
+        success('bundle', 'cache', 'remote', '--gc')
+        refs = subprocess.run([git, '-C', str(cache), 'for-each-ref', '--format=%(objectname)',
+                               'refs/okf/fetch-*'], capture_output=True, check=True).stdout.decode().splitlines()
+        current = success('bundle', 'show', 'remote')['data']['bundle']['git']['commit']
+        assert refs and set(refs) == {current}, refs
+        for name in sub_urls:
+            assert success('read', f'@remote/{name}/note')['data']['document']['text'].replace('\r\n', '\n') == raw
         assert 'updated' in success('read', '@remote/note', '--budget-bytes', '1024')['data']['document']['text']
     finally:
         stopped.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        other_server.shutdown()
+        other_server.server_close()
+        other_thread.join(timeout=5)
         (reports / 'server-events.json').write_text(json.dumps(events, indent=2) + '\n', encoding='utf-8')
         for name in ('git-events.jsonl', 'git-curl.log'):
             if (root / name).exists():
                 shutil.copyfile(root / name, reports / name)
-print('HTTPS fetch/refresh/compact and TLS/auth/not-found/disconnect/deadline/quota failures verified with real Git')
+print('Real Git HTTPS: credential isolation, refresh, GC/submodule reads, compact, and transport/quota failures passed')

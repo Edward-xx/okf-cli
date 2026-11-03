@@ -148,6 +148,13 @@ python scripts/evaluate.py target/release/okf target/verification/retrieval-1000
 
 `check_delivery.py` 校验响应 Schema、目录范围、索引完整性与同步修复、本地 HTTPS Git 流程与故障、检索预算、12 个消费任务回放、固定语料哈希及发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。CI 与打包工作流共用该入口；验收不访问公网。
 
+单独验证 Git 凭据隔离、GC 后子模块读取和 LFS 缓存完整性：
+
+```sh
+python scripts/check_git_https.py target/release/okf
+python scripts/check_git_integrity.py target/release/okf
+```
+
 固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 
 ```sh

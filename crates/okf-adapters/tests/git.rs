@@ -33,6 +33,117 @@ fn control() -> RequestControl {
     RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(false)))
 }
 #[test]
+fn gc_removes_stale_fetch_refs_and_preserves_live_refs() {
+    let repo = tempfile::tempdir().unwrap();
+    Git::init(repo.path(), &control()).unwrap();
+    let tree = git(repo.path(), &["mktree"]);
+    let old = git(repo.path(), &["commit-tree", &tree, "-m", "old"]);
+    let live = git(repo.path(), &["commit-tree", &tree, "-m", "live"]);
+    git(repo.path(), &["update-ref", "refs/okf/fetch-1-old", &old]);
+    git(repo.path(), &["update-ref", "refs/okf/fetch-1-live", &live]);
+    Git::gc(repo.path(), std::slice::from_ref(&live), &control()).unwrap();
+    let refs = git(repo.path(), &["for-each-ref", "--format=%(refname)"]);
+    assert!(!refs.contains("fetch-1-old"));
+    assert!(refs.contains("fetch-1-live"));
+    assert_eq!(
+        git(repo.path(), &["rev-parse", "refs/okf/fetch-1-live"]),
+        live
+    );
+}
+#[test]
+fn gc_preserves_nested_and_shared_submodules_across_repeated_runs() {
+    let repo = tempfile::tempdir().unwrap();
+    Git::init(repo.path(), &control()).unwrap();
+    let raw = "---\ntype: Note\n---\nNested submodule\n";
+    let file = repo.path().join("fixture.md");
+    fs::write(&file, raw).unwrap();
+    let blob = git(repo.path(), &["hash-object", "-w", file.to_str().unwrap()]);
+    git(
+        repo.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{blob},note.md"),
+        ],
+    );
+    let leaf_tree = git(repo.path(), &["write-tree"]);
+    let leaf = git(repo.path(), &["commit-tree", &leaf_tree, "-m", "leaf"]);
+    git(repo.path(), &["read-tree", "--empty"]);
+    git(
+        repo.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{leaf},nested"),
+        ],
+    );
+    let middle_tree = git(repo.path(), &["write-tree"]);
+    let middle = git(repo.path(), &["commit-tree", &middle_tree, "-m", "middle"]);
+    git(repo.path(), &["read-tree", "--empty"]);
+    for name in ["a", "b"] {
+        git(
+            repo.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{middle},{name}"),
+            ],
+        );
+    }
+    let tree = git(repo.path(), &["write-tree"]);
+    let live = git(repo.path(), &["commit-tree", &tree, "-m", "live"]);
+    git(repo.path(), &["update-ref", "refs/okf/fetch-live", &live]);
+    let binding = BundleBinding {
+        id: "nested".into(),
+        name: "nested".into(),
+        kind: "git".into(),
+        root: repo.path().to_string_lossy().into_owned(),
+        scope: "project".into(),
+        git: Some(Git::pin(repo.path(), &live, "", &control()).unwrap()),
+    };
+    for _ in 0..2 {
+        Git::gc(repo.path(), std::slice::from_ref(&live), &control()).unwrap();
+        for name in ["a", "b"] {
+            assert_eq!(
+                Git.read(
+                    &binding,
+                    &format!("{name}/nested/note.md"),
+                    1024,
+                    &control()
+                )
+                .unwrap(),
+                raw
+            );
+        }
+    }
+}
+
+#[test]
+fn gc_aborts_before_removing_refs_when_a_submodule_is_missing() {
+    let repo = tempfile::tempdir().unwrap();
+    Git::init(repo.path(), &control()).unwrap();
+    let empty = git(repo.path(), &["mktree"]);
+    let old = git(repo.path(), &["commit-tree", &empty, "-m", "old"]);
+    git(repo.path(), &["update-ref", "refs/okf/fetch-old", &old]);
+    git(
+        repo.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,missing",
+        ],
+    );
+    let tree = git(repo.path(), &["write-tree"]);
+    let live = git(repo.path(), &["commit-tree", &tree, "-m", "live"]);
+    assert!(Git::gc(repo.path(), &[live], &control()).is_err());
+    assert_eq!(git(repo.path(), &["rev-parse", "refs/okf/fetch-old"]), old);
+}
+
+#[test]
 fn pinned_tree_ignores_worktree_and_branch_updates_and_bounds_reads() {
     let repo = tempfile::tempdir().unwrap();
     git(repo.path(), &["init", "--initial-branch=main"]);

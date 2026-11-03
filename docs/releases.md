@@ -8,7 +8,7 @@ CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 �
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
-支持本地文件系统和公开 HTTPS Git 知识包；私有仓库认证、SSH、submodule 和 LFS 下载不在本版范围内。确定性检索验收不代表真实 Agent 答案质量已经测量。
+已发布的 `v0.1.0` 支持本地文件系统和公开 HTTPS Git 知识包；私有仓库认证、SSH、submodule 和 LFS 下载不在本版范围内。当前工作区的后续能力见 [实现状态](implementation-status.md)，不代表已发布附件包含这些改动。确定性检索验收不代表真实 Agent 答案质量已经测量。
 
 已发布版本从 [GitHub Releases](https://github.com/coolplayagent/okf-cli/releases) 下载。工作流产物或 Release 草稿不等同于正式发布。
 

@@ -6,7 +6,7 @@
 
 | 领域 | 范围 |
 | --- | --- |
-| 知识包 | 本地文件系统与固定 commit 的 Git tree/blob，项目与用户作用域绑定；公开 HTTPS 仓库获取与显式刷新 |
+| 知识包 | 本地文件系统与固定 commit 的 Git tree/blob，项目与用户作用域绑定；HTTPS/SSH 仓库获取、凭据引用与显式刷新 |
 | 加载 | 知识包概览、一层目录、概念卡片、原文字节分页、索引上的直接入链与出链 |
 | 检索 | 实时元数据匹配；同步索引上的正文子串匹配、元数据优先排序、章节内原文片段与任务上下文选择；目录范围、类型、标签、状态、审核层级和有效期筛选，可固定评估时间 |
 | 合规 | 概念结构与保留文件检查；元数据、来源脚注、正文路径、包内链接目标、计算合同及声明资源检查；可选附件、图片引用与标题/HTML 锚点检查 |
@@ -27,7 +27,7 @@
 - `Attested Computation` 检查字段形状、计算正文及包根相对声明资源的存在性与文件类型；外部 URI 不访问，计算执行与 Receipt 核验属于独立后续能力。
 - 截止时间和取消在检查点生效，不能强制中断已阻塞的系统 I/O、数据库操作或序列化。
 - 配置采用系统文件锁，进程异常退出会释放所有权，锁文件本身保留。
-- Git 远端支持无交互的 HTTPS（含私有凭据引用）与 SSH 获取，fetch 后 best-effort 下载 LFS 对象（需 git-lfs）并递归获取 submodule（gitlink）对象；读取时从本地 LFS 缓存 smudge LFS 指针以返回真实内容，对象未下载时报 `LFS_CONTENT_UNAVAILABLE`。Git 对象缓存支持占用查询、写入预算及保留历史对象的压缩；暂不删除历史版本，也不限制精确网络传输字节。
+- Git 支持 HTTPS/SSH、直接子模块获取和可选 LFS 下载；不会自动递归下载嵌套子模块。缓存支持压缩与显式 GC，GC 保护当前绑定及已下载的嵌套子模块；依赖缺失时拒绝回收。凭据隔离、LFS 完整性和对象字节预算见 [CLI 参考](cli-contract.md)。
 - 上下文返回确定性原文窗口，并不生成答案或保证语义相关；已提供确定性检索证据任务集，真实 Agent 答案质量评测仍需独立进行。
 
 参数、分页、故障处理与覆盖状态见 [CLI 参考](cli-contract.md)；结构、元数据与正文规则及其规范依据见 [OKF 检查矩阵](okf-validation.md)。
@@ -48,31 +48,19 @@ Git 测试覆盖固定提交读取、刷新与对象类型限制；索引测试�
 
 ## 最近验证
 
+### 2026-11-03：Git 凭据、LFS 完整性与 GC
+
+- Windows GNU 工作区 114 项测试通过，覆盖嵌套及共享子模块、重复 GC 和依赖缺失时保留引用。
+- `scripts/check_git_https.py` 使用本地 TLS 服务和真实 Git，验证同源 Token 传递、跨主机/端口隔离、刷新、GC 后子模块读取及传输故障。
+- `scripts/check_git_integrity.py` 验证真实 CLI 对 LFS 同长度篡改、截断、追加内容、缓存缺失及恢复的处理；无需安装 git-lfs。
+- 独立二进制冒烟测试通过。源码副本逐文件核对一致；验证使用临时链接包装脚本绕过本机 GNU 链接进程阻塞，未修改项目构建配置。未连接真实 SSH 服务，本轮也未执行三平台发行验收。
+
+
 ### 2026-11-02：附件类型报告与 HTML 锚点字符引用
 
 - 附件类型：`attachment_check` 新增 `types` 字段，列出 `--attachments` 检查到的附件目标的小写扩展名（去重、升序，图片与普通附件一并计入），不读取附件内容。
 - HTML 锚点：`id`/`name` 属性值中的字符引用（`&amp;`、`&#45;`、`&#x2D;` 等）先解码再匹配，带实体的显式锚点不再落入“不确定”。
 - 验证：全工作区 `cargo test` 通过（新增附件类型与实体解码测试）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净；`check_schema.py` 通过 Schema。
-
-### 2026-11-01：fetch 时 LFS 对象下载
-
-- `bundle add`/`bundle refresh` 在 Git fetch 成功后，若本机已安装 git-lfs，best-effort 运行 `git lfs fetch` 下载该提交的 LFS 对象到托管仓库 `lfs/objects` 缓存；失败不使 Git 绑定失效。
-- 存储预算 `--max-git-bytes` 现覆盖 LFS 对象目录（`objects/` 与 `lfs/objects`、`.git/lfs/objects` 一并计入），超限中断下载、保留已获取对象。
-- LFS 使用独立 HTTP batch 协议，`--credential` 不适用于 LFS。
-- 验证：`cargo test --workspace --all-targets --locked` 通过（新增本地 `file://` LFS 端点集成测试，git-lfs 缺失时跳过）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
-
-### 2026-11-01：Git LFS 指针读取
-
-- `read` 识别 Git LFS 指针（`version https://git-lfs.github.com/spec/v1` + `oid sha256|sha1` + `size`），从本地缓存（bare `<root>/lfs/objects`、非 bare `<root>/.git/lfs/objects`）读取对象原文；对象缺失返回 `LFS_CONTENT_UNAVAILABLE`（7），不触发网络下载、不返回指针占位文本。
-- 读取输出仍受单文件 `max` 字节上限约束；LFS 对象超过上限返回 `DOCUMENT_TOO_LARGE`。
-- 验证：`cargo test --workspace` 通过（新增指针解析单测 + 集成测试，git-lfs 缺失时集成测试跳过）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
-
-### 2026-11-01：submodule（gitlink）递归获取与读取
-
-- `check_mode` 现接受 `160000`（gitlink）；`object` 下降时把 gitlink 的 commit 解析为 tree，`list` 把 gitlink 当作目录，`read` 能读到 submodule 内文件。
-- fetch 后解析 `.gitmodules`（`git config --blob <commit>:.gitmodules`）得到 `path`/`url`，用 `git ls-tree -r` 找 gitlink，逐个 `git fetch` submodule 对象到托管仓库对象库；best-effort，沿用 HTTPS/SSH 传输限制。
-- 相对 submodule URL 按 superproject 远端（当作目录）解析；submodule 对象缺失时读取报 `GIT_OBJECT_UNAVAILABLE`。
-- 验证：`cargo test --workspace --all-targets --locked` 通过（新增相对 URL 解析/规范化单测 + gitlink 读取集成测试）；`clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 干净。
 
 ### 2026-10-31：图片引用、HTML 锚点与外部链接
 
