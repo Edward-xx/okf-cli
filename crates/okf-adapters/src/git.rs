@@ -422,10 +422,10 @@ fn resolve_credential(credential: &CredentialRef) -> Result<String> {
             value
         }
         CredentialRef::File { path } => {
-            let metadata = std::fs::metadata(path).map_err(Error::io)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
+                let metadata = std::fs::metadata(path).map_err(Error::io)?;
                 if metadata.permissions().mode() & 0o077 != 0 {
                     return Err(Error::new(
                         "GIT_CREDENTIAL_MISSING",
@@ -577,7 +577,7 @@ impl Git {
         Ok(format!("{}:{full}", git.commit))
     }
 
-    // Traverse trees component by component, never follow symlinks or gitlinks.
+    // Traverse trees and cached gitlink commits without following symlinks.
     fn object(
         binding: &BundleBinding,
         path: &str,
@@ -728,13 +728,9 @@ impl Git {
                 ));
             }
         }
-        // Best-effort LFS download for the fetched ref; the Git objects are
-        // already present, so LFS failure does not invalidate the fetch.
+        // Optional content fetches do not invalidate the superproject binding.
         Self::fetch_lfs(root, remote, &destination, control, max_bytes);
 
-        // Best-effort submodule fetch: gitlink objects must be present for
-        // submodule content to resolve. The Git objects are already fetched, so
-        // submodule failure does not invalidate the binding.
         let commit = text(run(
             root,
             &["rev-parse", "--verify", &destination],
@@ -838,7 +834,7 @@ impl Git {
                 65536,
                 control,
                 Some(max_bytes),
-                credential,
+                submodule_credential(remote, &resolved, credential),
             );
         }
     }
@@ -899,16 +895,55 @@ impl Git {
             live_commits.iter().map(String::as_str).collect();
         let is_oid =
             |s: &str| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit());
-        // Pin every live commit so pruning can never remove a bound revision.
-        for commit in live_commits {
-            if is_oid(commit) {
-                let _ = run(
-                    root,
-                    &["update-ref", &format!("refs/okf/pinned/{commit}"), commit],
-                    65536,
-                    control,
-                );
+        // Git does not follow gitlinks during reachability traversal. Discover
+        // their transitive closure before changing refs; incomplete discovery
+        // must abort GC rather than risk pruning a still-consumed object.
+        let mut protected = BTreeSet::new();
+        let mut pending = live_commits.to_vec();
+        let mut entries = 0usize;
+        while let Some(commit) = pending.pop() {
+            control.check()?;
+            if !is_oid(&commit) {
+                return Err(Error::new("INVALID_REFERENCE", "invalid live commit", 2));
             }
+            if !protected.insert(commit.clone()) {
+                continue;
+            }
+            let data = run(
+                root,
+                &["ls-tree", "-r", "-z", &commit],
+                8 * 1024 * 1024,
+                control,
+            )?;
+            for record in data.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+                entries += 1;
+                if entries > 100_000 {
+                    return Err(Error::new(
+                        "GIT_STORAGE_LIMIT",
+                        "GC dependency scan exceeds entry budget",
+                        7,
+                    ));
+                }
+                let header = record.split(|b| *b == b'\t').next().unwrap();
+                let header = std::str::from_utf8(header)
+                    .map_err(|_| Error::new("GIT_ERROR", "invalid tree header", 5))?;
+                let fields: Vec<_> = header.split_whitespace().collect();
+                if fields.len() != 3 {
+                    return Err(Error::new("GIT_ERROR", "invalid tree record", 5));
+                }
+                if fields[0] == "160000" {
+                    pending.push(fields[2].to_owned());
+                }
+            }
+        }
+        // Protect both bound revisions and all nested submodule commits.
+        for commit in &protected {
+            run(
+                root,
+                &["update-ref", &format!("refs/okf/pinned/{commit}"), commit],
+                65536,
+                control,
+            )?;
         }
         // Drop transient fetch refs that no longer point at a live commit.
         if let Ok(data) = run(
@@ -916,7 +951,7 @@ impl Git {
             &[
                 "for-each-ref",
                 "--format=%(refname) %(objectname)",
-                "refs/okf/fetch",
+                "refs/okf/fetch-*",
             ],
             8 * 1024 * 1024,
             control,
@@ -931,16 +966,14 @@ impl Git {
             }
         }
         run(root, &["gc", "--prune=now", "--quiet"], 65536, control)?;
-        // Drop the temporary pins; live commits stay reachable via retained refs.
-        for commit in live_commits {
-            if is_oid(commit) {
-                let _ = run(
-                    root,
-                    &["update-ref", "-d", &format!("refs/okf/pinned/{commit}")],
-                    65536,
-                    control,
-                );
-            }
+        // The next GC reconstructs these pins before pruning again.
+        for commit in &protected {
+            run(
+                root,
+                &["update-ref", "-d", &format!("refs/okf/pinned/{commit}")],
+                65536,
+                control,
+            )?;
         }
         let after = check_storage(root, u64::MAX, control)?;
         Ok(serde_json::json!({
@@ -1025,6 +1058,13 @@ fn smudge_lfs(
     max: usize,
     control: &RequestControl,
 ) -> Result<String> {
+    if pointer.oid.len() != 64 {
+        return Err(Error::new(
+            "LFS_INTEGRITY_ERROR",
+            "only SHA-256 LFS objects can be verified",
+            5,
+        ));
+    }
     if pointer.size > max as u64 {
         return Err(Error::new(
             "DOCUMENT_TOO_LARGE",
@@ -1051,6 +1091,13 @@ fn smudge_lfs(
             "DOCUMENT_TOO_LARGE",
             "Git LFS object exceeds read limit",
             7,
+        ));
+    }
+    if content.len() as u64 != pointer.size || okf_core::sha256(&content) != pointer.oid {
+        return Err(Error::new(
+            "LFS_INTEGRITY_ERROR",
+            "LFS content does not match its declared SHA-256 and size",
+            5,
         ));
     }
     text(content)
@@ -1112,7 +1159,7 @@ fn submodule_urls(
 /// absolute paths are used as-is; relative URLs (e.g. `../name`) are resolved
 /// against the superproject remote's directory.
 fn resolve_submodule_url(remote: &str, submodule_url: &str) -> String {
-    if submodule_url.contains("://") || submodule_url.starts_with('/') {
+    if !submodule_url.starts_with("./") && !submodule_url.starts_with("../") {
         return submodule_url.to_owned();
     }
     // Relative URLs resolve against the superproject remote treated as a
@@ -1124,6 +1171,24 @@ fn resolve_submodule_url(remote: &str, submodule_url: &str) -> String {
         format!("{remote}/{submodule_url}")
     };
     normalize_relative(&joined)
+}
+
+// Repository-controlled submodule URLs must not receive another host's token.
+fn submodule_credential<'a>(remote: &str, target: &str, token: Option<&'a str>) -> Option<&'a str> {
+    fn authority(url: &str) -> Option<&str> {
+        let authority = url.strip_prefix("https://")?.split('/').next()?;
+        if authority.is_empty()
+            || authority.contains(['@', '?', '#', '\\'])
+            || authority.chars().any(char::is_control)
+        {
+            return None;
+        }
+        Some(authority)
+    }
+    match (authority(remote), authority(target)) {
+        (Some(a), Some(b)) if a == b => token,
+        _ => None,
+    }
 }
 
 /// Collapse `.` and `..` segments in a URL or path while preserving the scheme
@@ -1323,6 +1388,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn submodule_tokens_are_limited_to_the_original_https_authority() {
+        let remote = "https://trusted.example/org/repo";
+        for target in [
+            "https://evil.example/sub",
+            "https://trusted.example@evil.example/sub",
+            "http://trusted.example/sub",
+            "git@trusted.example:sub",
+            "https://trusted.example:444/sub",
+        ] {
+            assert_eq!(submodule_credential(remote, target, Some("secret")), None);
+        }
+        assert_eq!(
+            submodule_credential(remote, "https://trusted.example/sub", Some("secret")),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn cached_lfs_content_must_match_both_digest_and_size() {
+        let root = tempfile::tempdir().unwrap();
+        let content = b"original";
+        let pointer = LfsPointer {
+            oid: okf_core::sha256(content),
+            size: content.len() as u64,
+        };
+        let path = root
+            .path()
+            .join("lfs/objects")
+            .join(&pointer.oid[..2])
+            .join(&pointer.oid[2..4])
+            .join(&pointer.oid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let control =
+            RequestControl::new(Duration::from_secs(10), Arc::new(AtomicBool::new(false)));
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(
+            smudge_lfs(root.path(), &pointer, 100, &control).unwrap(),
+            "original"
+        );
+        for corrupt in [b"modified".as_slice(), b"short".as_slice()] {
+            std::fs::write(&path, corrupt).unwrap();
+            assert_eq!(
+                smudge_lfs(root.path(), &pointer, 100, &control)
+                    .unwrap_err()
+                    .code,
+                "LFS_INTEGRITY_ERROR"
+            );
+        }
+    }
+
+    #[test]
     fn lfs_pointer_detection_parses_ids_and_rejects_plain_content() {
         let pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:271eb325e8cb0b96197c23fa14d412aed9aae0f9847869fe34dd9a804dcabbdb\nsize 100000\n";
         let parsed = lfs_pointer(pointer).unwrap();
@@ -1364,6 +1480,10 @@ mod tests {
 
     #[test]
     fn resolve_submodule_url_keeps_absolute_and_resolves_relative() {
+        assert_eq!(
+            resolve_submodule_url("https://host/repo", "git@host:org/sub.git"),
+            "git@host:org/sub.git"
+        );
         assert_eq!(
             resolve_submodule_url(
                 "https://github.com/owner/repo.git",

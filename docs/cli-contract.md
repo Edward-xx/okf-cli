@@ -116,13 +116,15 @@ SSH 仓库通过 `ssh://` 或 `user@host:path` 形式的 `--url` 获取，鉴权
 
 `bundle add`/`bundle refresh` 在 Git fetch 成功后，若本机已安装 git-lfs，会以 best-effort 方式运行 `git lfs fetch` 下载该提交引用的 LFS 对象到托管仓库的 `lfs/objects` 缓存；失败（未安装 git-lfs、远端无 LFS 端点或网络中断）不影响 Git 绑定发布。LFS 传输使用独立的 HTTP batch 协议，`--credential`（Git HTTP 鉴权）不适用于 LFS。
 
-Git LFS 指针在读取时从本地缓存取回真实内容：`read` 遇到以 `version https://git-lfs.github.com/spec/v1` 开头的 LFS 指针时，从托管仓库的 `lfs/objects`（或 `.git/lfs/objects`）缓存读取对象原文，而非返回指针占位文本。对象未下载时返回 `LFS_CONTENT_UNAVAILABLE`（7），不触发网络下载、不返回指针；对象超过读取上限仍返回 `DOCUMENT_TOO_LARGE`。
+Git LFS 指针在读取时从本地缓存取回真实内容：`read` 遇到以 `version https://git-lfs.github.com/spec/v1` 开头的 LFS 指针时，从托管仓库的 `lfs/objects`（或 `.git/lfs/objects`）缓存读取对象原文，而非返回指针占位文本。对象未下载时返回 `LFS_CONTENT_UNAVAILABLE`（7），不触发网络下载、不返回指针；对象超过读取上限仍返回 `DOCUMENT_TOO_LARGE`。返回内容前核对指针声明的长度与 SHA-256；不匹配或使用不支持校验的 SHA-1 指针时返回 `LFS_INTEGRITY_ERROR`（5）。
 
-含 submodule（gitlink）的仓库在 fetch 后递归获取 submodule 对象：解析 `.gitmodules` 得到 submodule 的 `path` 与 `url`，按提交的 gitlink 逐个 `git fetch` 到托管仓库对象库，读取时把 gitlink 当作普通目录遍历其内容。相对 URL 按 superproject 远端解析；submodule 获取为 best-effort，失败不使 superproject 绑定失效，读取缺失的 submodule 内容时报 `GIT_OBJECT_UNAVAILABLE`。submodule 获取沿用 HTTPS/SSH 传输限制，不跟随本地路径或 `file://` URL。
+子模块仅在 HTTPS 主机和端口与主仓库完全相同时继承 `--credential`；跨主机、不同端口或不同协议不转发 Token。SCP 格式地址（如 `git@host:org/repo.git`）保持原样，仅 `./`、`../` 开头的 URL 按主仓库地址解析。
+
+fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象，不递归下载嵌套子模块。读取时将本地已有的 gitlink 提交解析为目录。子模块获取为 best-effort，失败不使主仓库绑定失效；读取缺失对象时返回 `GIT_OBJECT_UNAVAILABLE`。传输仅允许 HTTPS/SSH，不跟随本地路径或 `file://` URL。
 
 `--max-fetch-bytes` 承诺单次 fetch 新接收对象的对象字节和（fetch 前后 `cat-file --batch-all-objects` 差集），与采样的 `--max-git-bytes` 存储配额相互独立；超限返回 `GIT_FETCH_LIMIT`（7）并保留旧绑定。它计量对象字节，不含 TLS 与传输开销。
 
-`bundle cache NAME --gc` 显式回收历史与不可达对象：先为所有仍被绑定引用的提交建立临时 pin ref，删除不再指向存活提交的临时 fetch ref，再执行 `git gc --prune=now`。默认不自动过期，清理不影响仍使用的提交。
+`bundle cache NAME --gc` 显式回收历史与不可达对象：先递归扫描所有仍被绑定引用的提交及其 gitlink 子模块（包括嵌套子模块），为这些提交建立临时 pin ref，删除不再指向存活提交的临时 fetch ref，再执行 `git gc --prune=now`。扫描最多检查 100000 个树条目；对象缺失、扫描超限或 pin 创建失败时不执行回收。默认不自动过期，清理不影响仍使用的提交及已下载的子模块内容。
 
 远端失败使用 `GIT_AUTH_FAILED`、`GIT_TLS_FAILED`、`GIT_REMOTE_NOT_FOUND` 或 `GIT_TRANSPORT_FAILED`，对象占用超限使用 `GIT_STORAGE_LIMIT`（7），写锁竞争使用 `GIT_CACHE_LOCKED`（5）。原始 Git stderr 不进入响应。普通对象缺失仍使用 `GIT_OBJECT_UNAVAILABLE`。网络失败与预算不足均保留旧绑定。
 
