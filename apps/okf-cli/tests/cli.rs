@@ -1622,6 +1622,26 @@ fn image_references_are_checked_when_attachments_are_enabled() {
 }
 
 #[test]
+fn attachment_types_are_reported_for_images_and_files() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/types.md"),
+        "---\ntype: Note\n---\n![p](pic.png) [d](data.csv) [r](report.PDF) [m](missing.json)\n",
+    )
+    .unwrap();
+    fs::write(f.work.path().join("knowledge/pic.png"), [0, 255, 128]).unwrap();
+    fs::write(f.work.path().join("knowledge/data.csv"), b"a,b\n1,2\n").unwrap();
+    fs::write(f.work.path().join("knowledge/report.PDF"), b"%PDF").unwrap();
+    let response = value(&f.run(&["validate", "book", "--attachments"]));
+    let types = response["data"]["attachment_check"]["types"]
+        .as_array()
+        .unwrap();
+    let types: Vec<&str> = types.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(types, vec!["csv", "json", "pdf", "png"]);
+}
+
+#[test]
 fn external_links_are_reported_without_fetching() {
     let f = Fixture::new();
     f.bind();

@@ -130,6 +130,6 @@ result = 1 + 1
 
 ## 可选附件与锚点检查
 
-`validate --attachments` 增加普通正文链接的附件元信息检查，返回 `MISSING_ATTACHMENT` 字节位置警告；图片仍不参与检查。`--anchor-style headings-v1` 增加显式规则下的 `MISSING_ANCHOR` 警告，规则与覆盖说明见 [CLI 参考](cli-contract.md#关系导航与扩展检查)。这两项均不增加 OKF 必填要求，质量警告不改变文档结构合规性。
+`validate --attachments` 增加普通正文链接与图片引用的附件元信息检查，返回 `MISSING_ATTACHMENT`/`MISSING_IMAGE` 字节位置警告，不读取附件内容；`attachment_check` 报告 `images_included`（恒为 `true`）、`images_checked`（图片引用数量）与 `types`（检查目标的小写扩展名集合，去重、升序，图片与普通附件一并计入）。`--anchor-style headings-v1` 增加显式规则下的 `MISSING_ANCHOR` 警告，规则与覆盖说明见 [CLI 参考](cli-contract.md#关系导航与扩展检查)。这两项均不增加 OKF 必填要求，质量警告不改变文档结构合规性。
 
-附件与锚点结果分别返回 `attachment_check`、`anchor_check`，不替代原有 `link_check` 和计算 `resource_check`。完整列举前不判断链接目标缺失；附件只查询元信息，锚点复用本次已读取文档的标题清单。无法识别的自定义 HTML 锚点保留为未检查。
+附件与锚点结果分别返回 `attachment_check`、`anchor_check`，不替代原有 `link_check` 和计算 `resource_check`。完整列举前不判断链接目标缺失；附件只查询元信息，锚点复用本次已读取文档的标题清单。显式 HTML `id`/`name` 锚点的属性值先解码字符引用（如 `&amp;`、`&#45;`、`&#x2D;`）再匹配；无法识别的自定义 HTML 锚点保留为未检查。
