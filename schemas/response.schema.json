@@ -22,7 +22,50 @@
         {"if": {"properties": {"valid": {"const": true}}}, "then": {"properties": {"complete": {"const": true}, "failures": {"const": 0}}}}
       ]
     }}}
+  }, {
+    "if": {"properties": {
+      "command": {"const": "search"},
+      "status": {"enum": ["ok", "partial"]}
+    }},
+    "then": {"properties": {"data": {
+      "required": ["mode"],
+      "properties": {"mode": {"enum": ["metadata", "full_text"]}},
+      "allOf": [{
+        "if": {"properties": {"mode": {"const": "metadata"}}},
+        "then": {
+          "required": ["query", "items", "evaluated_at"],
+          "properties": {
+            "query": {"type": "string", "minLength": 1},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/metadata_search_item"}}
+          }
+        }
+      }]
+    }}}
   }],
+  "$defs": {
+    "metadata_search_item": {
+      "type": "object",
+      "required": [
+        "id", "type", "title", "description", "tags", "trust", "status", "expiry",
+        "kind", "ref", "bundle_id", "content_sha256", "upstream_revision"
+      ],
+      "properties": {
+        "id": {"type": "string"},
+        "type": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "description": {"type": ["string", "null"]},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "trust": {"enum": ["unverified", "machine-confirmed", "human-reviewed"]},
+        "status": {"type": "string"},
+        "expiry": {"enum": ["current", "expired", "unspecified", "unknown"]},
+        "kind": {"const": "concept"},
+        "ref": {"type": "string", "pattern": "^@[^/]+/"},
+        "bundle_id": {"type": "string"},
+        "content_sha256": {"type": "string", "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+        "upstream_revision": {"type": ["string", "null"]}
+      }
+    }
+  },
   "required": [
     "schema_version",
     "request_id",

@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 
 root = Path(__file__).resolve().parents[1]
 binary = Path(sys.argv[1]).resolve()
+subprocess.run([sys.executable, str(root / 'scripts/check_search_schema.py')], check=True)
 schema = json.loads((root / 'schemas/response.schema.json').read_text(encoding='utf-8'))
 Draft202012Validator.check_schema(schema)
 validator = Draft202012Validator(schema)
@@ -20,9 +21,17 @@ with tempfile.TemporaryDirectory(prefix='okf-schema-') as temporary:
     bundle = workspace / 'book'
     bundle.mkdir()
     (bundle / 'note.md').write_text('---\ntype: Note\n---\nHello 认证\n', encoding='utf-8')
+    (bundle / 'rich.md').write_text(
+        '---\ntype: Custom Type\ntitle: 丰富卡片\ndescription: 检索摘要\ntags: [security]\n---\nRich content\n',
+        encoding='utf-8')
     cases = [
         (0, ['bundle', 'add', 'book', '--path', str(bundle)]),
         (0, ['validate', 'book']), (0, ['sync', 'book']),
+        (0, ['search', 'note', '--bundle', 'book'], ['note']),
+        (0, ['search', 'rich', '--bundle', 'book'], ['rich']),
+        (0, ['search', 'no-match', '--bundle', 'book'], []),
+        (7, ['search', 'note', '--bundle', 'book', '--max-scan', '1'], []),
+        (3, ['search', 'note', '--bundle', 'missing']),
         (0, ['search', 'Hello', '--bundle', 'book', '--full-text']),
         (0, ['context', '--query', 'Hello', '--bundle', 'book', '--content']),
         (0, ['read', '@book/note', '--indexed']),
@@ -40,17 +49,21 @@ with tempfile.TemporaryDirectory(prefix='okf-schema-') as temporary:
         (0, ['validate', 'book', '--max-warnings', '0']),
         (7, ['validate', 'book', '--max-warnings', '0', '--max-scan', '1']),
         (0, ['bundle', 'add', 'other', '--path', str(bundle)]),
+        (7, ['search', 'note', '--bundle', 'book', '--bundle', 'other', '--limit', '1'], ['note']),
         (7, ['search', 'Hello', '--bundle', 'book', '--bundle', 'other', '--full-text']),
         (0, ['sync', 'other']),
         (0, ['search', 'Hello', '--bundle', 'book', '--bundle', 'other', '--full-text']),
         (7, ['context', '--query', 'Hello', '--bundle', 'book', '--bundle', 'other', '--content', '--max-scan', '1']),
     ]
-    for code, args in cases:
+    for code, args, *expected_ids in cases:
         result = subprocess.run([str(binary), '--format', 'json', *args], env=env,
                                 cwd=workspace, capture_output=True, timeout=60)
         assert result.returncode == code, (args, result.stdout, result.stderr)
         assert not result.stderr, result.stderr
-        validator.validate(json.loads(result.stdout))
+        response = json.loads(result.stdout)
+        validator.validate(response)
+        if expected_ids:
+            assert [item['id'] for item in response['data']['items']] == expected_ids[0], response
     (bundle / 'note.md').write_text('---\ntype: Note\ntitle: 123\n---\nHello\n', encoding='utf-8')
     result = subprocess.run([str(binary), '--format', 'json', 'validate', 'book', '--max-warnings', '0'],
                             env=env, cwd=workspace, capture_output=True, timeout=60)
