@@ -338,3 +338,78 @@ fn lfs_pointer_reads_real_content_when_cached_and_reports_when_missing() {
     );
     fs::rename(&backup, &objects).unwrap();
 }
+
+#[test]
+fn submodule_content_resolves_once_objects_are_fetched() {
+    // Submodule repository.
+    let sub = tempfile::tempdir().unwrap();
+    git(sub.path(), &["init", "--initial-branch=main"]);
+    let raw = "---\ntype: Note\n---\nsubmodule body\n";
+    fs::write(sub.path().join("README.md"), raw).unwrap();
+    git(sub.path(), &["add", "README.md"]);
+    git(sub.path(), &["commit", "-m", "sub"]);
+    let sub_oid = git(sub.path(), &["rev-parse", "HEAD"]);
+
+    // Superproject with the submodule at `subdir`.
+    let sup = tempfile::tempdir().unwrap();
+    git(sup.path(), &["init", "--initial-branch=main"]);
+    git(
+        sup.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.path().to_str().unwrap(),
+            "subdir",
+        ],
+    );
+    git(sup.path(), &["commit", "-m", "add submodule"]);
+
+    let binding = BundleBinding {
+        id: "sm".into(),
+        name: "sm".into(),
+        kind: "git".into(),
+        root: sup.path().to_string_lossy().into_owned(),
+        scope: "project".into(),
+        git: Some(Git::pin(sup.path(), "HEAD", "", &control()).unwrap()),
+    };
+
+    // Without the submodule objects, the gitlink cannot resolve.
+    assert_eq!(
+        Git.read(&binding, "subdir/README.md", 1024, &control())
+            .unwrap_err()
+            .code,
+        "GIT_OBJECT_UNAVAILABLE"
+    );
+
+    // Fetch the submodule objects into the superproject store (what
+    // `fetch_submodules` does) and the content resolves through the gitlink.
+    git(
+        sup.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "-q",
+            sub.path().to_str().unwrap(),
+            &sub_oid,
+        ],
+    );
+    assert_eq!(
+        Git.read(&binding, "subdir/README.md", 1024, &control())
+            .unwrap(),
+        raw
+    );
+
+    // The submodule shows up as a directory in listings.
+    let c = control();
+    let listing = Git
+        .list(&binding, "", &mut ScanBudget::new(100, &c))
+        .unwrap();
+    assert!(listing
+        .entries
+        .iter()
+        .any(|e| e.path == "subdir" && e.directory));
+}
