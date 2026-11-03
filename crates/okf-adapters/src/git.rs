@@ -1,4 +1,7 @@
-//! Read immutable Git objects. No checkout, filters, hooks, LFS or submodules.
+//! Read immutable Git objects. No checkout, filters or hooks. LFS pointer blobs
+//! are smudged from the local LFS cache so reads return real content; when the
+//! object is not downloaded the read reports `LFS_CONTENT_UNAVAILABLE` instead of
+//! returning the pointer. Submodules (gitlinks) are still not followed.
 use okf_application::{
     BundleBinding, BundleReader, CredentialRef, Entry, GitRevision, Listing, RequestControl,
     ResourceMetadata, ScanBudget,
@@ -852,6 +855,100 @@ fn check_mode(mode: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// A parsed Git LFS pointer: a small placeholder blob that references the real
+/// content stored outside the Git object database.
+struct LfsPointer {
+    oid: String,
+    size: u64,
+}
+
+/// Detect a Git LFS pointer and extract its object id and content size. A
+/// pointer is three lines: `version https://git-lfs.github.com/spec/v1`,
+/// `oid sha256:<hex>` (or `sha1`), and `size <bytes>`. Anything else is treated
+/// as ordinary content and never mistaken for a pointer.
+fn lfs_pointer(bytes: &[u8]) -> Option<LfsPointer> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != "version https://git-lfs.github.com/spec/v1" {
+        return None;
+    }
+    let oid_line = lines.next()?;
+    let oid = oid_line
+        .strip_prefix("oid sha256:")
+        .or_else(|| oid_line.strip_prefix("oid sha1:"))?;
+    if !oid.bytes().all(|b| b.is_ascii_hexdigit()) || !matches!(oid.len(), 40 | 64) {
+        return None;
+    }
+    let size = lines.next()?.strip_prefix("size ")?.parse::<u64>().ok()?;
+    Some(LfsPointer {
+        oid: oid.to_ascii_lowercase(),
+        size,
+    })
+}
+
+/// Locate a locally cached LFS object for `oid`, checking both the bare
+/// (`<root>/lfs/objects`) and non-bare (`<root>/.git/lfs/objects`) storage
+/// layouts. Returns `None` when the object has not been downloaded, so the
+/// caller reports it instead of triggering a network fetch. Symbolic links are
+/// not followed, matching the object-store posture elsewhere in this module.
+fn lfs_object_path(root: &Path, oid: &str) -> Option<std::path::PathBuf> {
+    let relative = std::path::Path::new(&oid[..2]).join(&oid[2..4]).join(oid);
+    for base in [
+        root.join("lfs").join("objects"),
+        root.join(".git").join("lfs").join("objects"),
+    ] {
+        let candidate = base.join(&relative);
+        if let Ok(metadata) = candidate.symlink_metadata() {
+            if metadata.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Replace an LFS pointer with its real content from the local cache. The read
+/// never triggers a download: when the object is absent it reports
+/// `LFS_CONTENT_UNAVAILABLE` so callers observe a clear signal instead of the
+/// pointer placeholder. Output is bounded by `max` bytes.
+fn smudge_lfs(
+    root: &Path,
+    pointer: &LfsPointer,
+    max: usize,
+    control: &RequestControl,
+) -> Result<String> {
+    if pointer.size > max as u64 {
+        return Err(Error::new(
+            "DOCUMENT_TOO_LARGE",
+            "Git LFS object exceeds read limit",
+            7,
+        ));
+    }
+    control.check()?;
+    let object = lfs_object_path(root, &pointer.oid).ok_or_else(|| {
+        Error::new(
+            "LFS_CONTENT_UNAVAILABLE",
+            "Git LFS object is not downloaded; the pointer has no local content",
+            7,
+        )
+    })?;
+    let file = std::fs::File::open(&object).map_err(Error::io)?;
+    let mut content = Vec::new();
+    file.take((max as u64) + 1)
+        .read_to_end(&mut content)
+        .map_err(Error::io)?;
+    control.check()?;
+    if content.len() > max {
+        return Err(Error::new(
+            "DOCUMENT_TOO_LARGE",
+            "Git LFS object exceeds read limit",
+            7,
+        ));
+    }
+    text(content)
+}
+
 impl BundleReader for Git {
     fn probe(&self, binding: &BundleBinding) -> Result<()> {
         let control =
@@ -968,12 +1065,11 @@ impl BundleReader for Git {
                 7,
             ));
         }
-        text(run(
-            Path::new(&b.root),
-            &["cat-file", "blob", &oid],
-            max,
-            c,
-        )?)
+        let bytes = run(Path::new(&b.root), &["cat-file", "blob", &oid], max, c)?;
+        if let Some(pointer) = lfs_pointer(&bytes) {
+            return smudge_lfs(Path::new(&b.root), &pointer, max, c);
+        }
+        text(bytes)
     }
 }
 
@@ -1017,6 +1113,32 @@ impl BundleReader for Readers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lfs_pointer_detection_parses_ids_and_rejects_plain_content() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:271eb325e8cb0b96197c23fa14d412aed9aae0f9847869fe34dd9a804dcabbdb\nsize 100000\n";
+        let parsed = lfs_pointer(pointer).unwrap();
+        assert_eq!(
+            parsed.oid,
+            "271eb325e8cb0b96197c23fa14d412aed9aae0f9847869fe34dd9a804dcabbdb"
+        );
+        assert_eq!(parsed.size, 100000);
+        // Plain Markdown content is never an LFS pointer.
+        assert!(lfs_pointer(b"---\ntype: Note\n---\nbody\n").is_none());
+        // Wrong version, truncated oid, and non-hex oid are rejected.
+        assert!(lfs_pointer(
+            b"version https://git-lfs.github.com/spec/v2\noid sha256:deadbeef\nsize 1\n"
+        )
+        .is_none());
+        assert!(lfs_pointer(
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:tooshort\nsize 1\n"
+        )
+        .is_none());
+        assert!(lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha256:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\nsize 1\n").is_none());
+        // sha1 pointers are also recognized.
+        let sha1 = lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha1:0123456789abcdef0123456789abcdef01234567\nsize 7\n").unwrap();
+        assert_eq!(sha1.size, 7);
+    }
 
     #[test]
     fn cache_guard_releases_lock_with_a_duplicate_handle_alive() {
