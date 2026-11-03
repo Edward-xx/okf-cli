@@ -7,6 +7,8 @@ import tomllib
 import zipfile
 
 
+SKILL_FILES = ('SKILL.md', 'references/cli-workflows.md')
+
 TARGETS = {
     'x86_64-unknown-linux-gnu': 'linux-x86_64/okf',
     'x86_64-pc-windows-msvc': 'windows-x86_64/okf.exe',
@@ -36,8 +38,9 @@ def read_package(path):
                     and ':' not in name and '\\' not in name, 'unsafe archive path')
         files = {name: archive.read(name) for name in names}
     manifest = json.loads(files.pop('manifest.json'))
-    require({name: digest(data) for name, data in files.items()} == manifest['sha256'],
-            'package inventory or content hash mismatch')
+    require(set(files) == set(manifest['sha256']), 'archive inventory mismatch')
+    for name, data in files.items():
+        require(digest(data) == manifest['sha256'][name], f'file hash mismatch: {name}')
     return manifest, files
 
 
@@ -47,8 +50,8 @@ def assemble(source, destination, expected_commit, tag=None):
     expected = {f'okf-cli-{version}-{target}.zip' for target in TARGETS}
     require({p.name for p in source.iterdir()} == expected | {f'{name}.sha256' for name in expected},
             'expected exactly three platform archives and their checksums')
-    skill = (ROOT / 'skills/okf-cli/SKILL.md').read_bytes()
-    bundled = {'SKILL.md': skill, 'LICENSE': (ROOT / 'LICENSE').read_bytes()}
+    skill = {name: (ROOT / 'skills/okf-cli' / name).read_bytes() for name in SKILL_FILES}
+    bundled = {**skill, 'LICENSE': (ROOT / 'LICENSE').read_bytes()}
     packages = []
     for target, asset in TARGETS.items():
         path = source / f'okf-cli-{version}-{target}.zip'
@@ -58,7 +61,8 @@ def assemble(source, destination, expected_commit, tag=None):
         require(manifest['source_commit'] == expected_commit and manifest['source_dirty'] is False,
                 'packages must come from the same clean source commit')
         require(manifest['tag'] == tag, 'package tag mismatch')
-        require(files['skills/okf-cli/SKILL.md'] == skill, 'package skill mismatch')
+        for name, content in skill.items():
+            require(files.get(f'skills/okf-cli/{name}') == content, 'package skill mismatch')
         binary = 'okf.exe' if 'windows' in target else 'okf'
         bundled[f'assets/{asset}'] = files[binary]
         packages.append({'name': path.name, 'sha256': digest(path.read_bytes()), 'target': target})

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import zipfile
 
-from assemble_release import ROOT, TARGETS, digest, require
+from assemble_release import ROOT, TARGETS, SKILL_FILES, digest, require
 
 
 def verify(path):
@@ -17,7 +17,7 @@ def verify(path):
             == [digest(path.read_bytes()), path.name], 'skill archive checksum mismatch')
     with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory(prefix='okf-skill-') as temp:
         manifest = json.loads(archive.read('okf-cli/manifest.json'))
-        expected = {'SKILL.md', 'LICENSE'} | {f'assets/{asset}' for asset in TARGETS.values()}
+        expected = set(SKILL_FILES) | {'LICENSE'} | {f'assets/{asset}' for asset in TARGETS.values()}
         require(set(manifest['sha256']) == expected, 'skill manifest inventory mismatch')
         names = archive.namelist()
         require(len(names) == len(set(names)) and set(names)
@@ -43,8 +43,9 @@ def verify(path):
         installed = Path(temp) / 'installed'
         subprocess.run([str(binary), 'skill', 'install', str(installed)], env=env, cwd=temp,
                        check=True, stdout=subprocess.DEVNULL)
-        require((installed / 'SKILL.md').read_bytes() == (Path(temp) / 'okf-cli/SKILL.md').read_bytes(),
-                'skill binary embedded instructions mismatch')
+        for name in SKILL_FILES:
+            require((installed / name).read_bytes() == (Path(temp) / 'okf-cli' / name).read_bytes(),
+                    'skill binary embedded instructions mismatch')
         subprocess.run([sys.executable, str(ROOT / 'scripts/smoke.py'), str(binary)],
                        env=env, cwd=temp, check=True, timeout=300)
     print('Skill hashes, build information, embedded instructions and native smoke checks passed')

@@ -474,8 +474,10 @@ fn parse_credential(value: &str) -> std::result::Result<CredentialRef, String> {
         if path.is_empty() {
             return Err("credential file:PATH requires a non-empty path".into());
         }
+        let path = std::path::absolute(path)
+            .map_err(|e| format!("cannot resolve credential file path: {e}"))?;
         Ok(CredentialRef::File {
-            path: path.to_owned(),
+            path: path.to_string_lossy().into_owned(),
         })
     } else {
         Err("credential must be `env:VAR` or `file:PATH`".into())
@@ -519,6 +521,33 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
     {
         std::fs::create_dir_all(path).map_err(Error::io)?;
         let destination = path.join("SKILL.md");
+        let reference = path.join("references/cli-workflows.md");
+        for target in [&destination, &reference] {
+            if std::fs::symlink_metadata(target).is_ok() {
+                return Err(Error::io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("skill file already exists: {}", target.display()),
+                )));
+            }
+        }
+        let references = path.join("references");
+        if std::fs::symlink_metadata(&references).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(Error::io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "skill references directory is a symbolic link",
+            )));
+        }
+        std::fs::create_dir_all(&references).map_err(Error::io)?;
+        let mut reference_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&reference)
+            .map_err(Error::io)?;
+        reference_file
+            .write_all(include_bytes!(
+                "../../../skills/okf-cli/references/cli-workflows.md"
+            ))
+            .map_err(Error::io)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)

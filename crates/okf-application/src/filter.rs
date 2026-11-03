@@ -39,27 +39,23 @@ impl SearchFilter {
     }
 
     pub fn matches(&self, card: &Value) -> bool {
-        (self.types.is_empty()
-            || card["type"]
-                .as_str()
-                .is_some_and(|v| self.types.iter().any(|t| t == v)))
-            && (self.statuses.is_empty()
-                || card["status"]
+        [
+            ("type", &self.types),
+            ("status", &self.statuses),
+            ("trust", &self.trusts),
+            ("expiry", &self.expiries),
+        ]
+        .into_iter()
+        .all(|(field, accepted)| {
+            accepted.is_empty()
+                || card[field]
                     .as_str()
-                    .is_some_and(|v| self.statuses.iter().any(|s| s == v)))
-            && (self.tags.is_empty()
-                || card["tags"].as_array().is_some_and(|values| {
-                    values
-                        .iter()
-                        .any(|v| v.as_str().is_some_and(|v| self.tags.iter().any(|t| t == v)))
-                }))
-            && (self.trusts.is_empty()
-                || card["trust"]
-                    .as_str()
-                    .is_some_and(|v| self.trusts.iter().any(|t| t == v)))
-            && (self.expiries.is_empty()
-                || card["expiry"]
-                    .as_str()
-                    .is_some_and(|v| self.expiries.iter().any(|t| t == v)))
+                    .is_some_and(|value| accepted.iter().any(|item| item == value))
+        }) && (self.tags.is_empty()
+            || card["tags"].as_array().is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|v| self.tags.iter().any(|t| t == v)))
+            }))
     }
 }

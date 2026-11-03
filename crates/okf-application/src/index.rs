@@ -538,9 +538,7 @@ impl App<'_> {
                 if !filter.matches(&serde_json::to_value(&card).map_err(Error::io)?) {
                     continue;
                 }
-                let metadata = serde_json::to_string(&card)
-                    .map_err(Error::io)?
-                    .to_lowercase();
+                let metadata = card.search_text();
                 let body = &document.raw[doc.body_start..];
                 let lower = body.to_lowercase();
                 if !terms

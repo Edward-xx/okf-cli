@@ -57,16 +57,23 @@ fn candidate_budgets_filters_and_time_dependent_metadata_preserve_evidence() {
     assert!(selected.complete);
     assert_eq!(selected.snapshot.documents[0].path, "z/evidence.md");
     assert!(selected.rows_read <= request.row_limit);
-    let expiry = vec!["expired".into()];
-    request.terms = &expiry;
+    let expired_filter = SearchFilter {
+        types: vec!["Service".into()],
+        expiries: vec!["expired".into()],
+        ..Default::default()
+    };
+    request.filter = &expired_filter;
+    assert!(index
+        .candidates("book", &request)
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .documents
+        .is_empty());
     request.evaluated_at = "2032-01-01T00:00:00Z".parse().unwrap();
-    assert!(
-        index
-            .candidates("book", &request)
-            .unwrap()
-            .unwrap()
-            .complete
-    );
+    let selected = index.candidates("book", &request).unwrap().unwrap();
+    assert!(selected.complete);
+    assert_eq!(selected.snapshot.documents.len(), 1);
     request.row_limit = 0;
     let selected = index.candidates("book", &request).unwrap().unwrap();
     assert!(!selected.complete);
@@ -101,8 +108,14 @@ fn mutations_invalidate_candidates_and_resync_repairs_same_generation() {
         "UPDATE candidate_documents SET metadata='{}'",
         "UPDATE documents SET raw=raw",
         "UPDATE candidate_snapshots SET postings=0",
+        "UPDATE candidate_snapshots SET version=1",
     ] {
         sql.execute(mutation, []).unwrap();
+        // Derived version changes must not break original indexed reads.
+        assert_eq!(
+            index.read("book", "a.md").unwrap().unwrap().documents[0].raw,
+            data.documents[0].raw
+        );
         let report = index.verify("book", 100, &control()).unwrap().unwrap();
         assert!(report
             .findings

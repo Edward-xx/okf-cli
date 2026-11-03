@@ -26,7 +26,8 @@ class ReleaseAssemblyTests(unittest.TestCase):
     def write_package(self, platform_target, **changes):
         target = platform_target
         binary = 'okf.exe' if 'windows' in target else 'okf'
-        files = {binary: target.encode(), 'skills/okf-cli/SKILL.md': (ROOT / 'skills/okf-cli/SKILL.md').read_bytes()}
+        files = {binary: target.encode(), **{f'skills/okf-cli/{name}': (ROOT / 'skills/okf-cli' / name).read_bytes()
+                 for name in ('SKILL.md', 'references/cli-workflows.md')}}
         manifest = dict(version=self.version, target=target, source_commit=self.commit,
                         source_dirty=False, tag=None,
                         sha256={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
@@ -46,6 +47,8 @@ class ReleaseAssemblyTests(unittest.TestCase):
                 name = f'okf-cli/assets/{asset}'
                 self.assertEqual(archive.read(name), target.encode())
                 self.assertTrue(archive.getinfo(name).external_attr >> 16 & 0o111)
+            self.assertEqual(archive.read('okf-cli/references/cli-workflows.md'),
+                             (ROOT / 'skills/okf-cli/references/cli-workflows.md').read_bytes())
             manifest = json.loads(archive.read('okf-cli/manifest.json'))
             for name, digest in manifest['sha256'].items():
                 self.assertEqual(hashlib.sha256(archive.read(f'okf-cli/{name}')).hexdigest(), digest)
@@ -79,6 +82,32 @@ class ReleaseAssemblyTests(unittest.TestCase):
         path.write_bytes(path.read_bytes() + b'corrupt')
         with self.assertRaisesRegex(ValueError, 'checksum'):
             assemble(self.source, self.output, self.commit)
+
+    def test_missing_or_stale_command_reference(self):
+        target = next(iter(TARGETS))
+        for content in (None, b'stale reference'):
+            with self.subTest(content=content):
+                self.write_package(target)
+                path = next(self.source.glob(f'*{target}.zip'))
+                with zipfile.ZipFile(path) as archive:
+                    files = {name: archive.read(name) for name in archive.namelist()}
+                name = 'skills/okf-cli/references/cli-workflows.md'
+                manifest = json.loads(files['manifest.json'])
+                if content is None:
+                    del files[name]
+                    del manifest['sha256'][name]
+                else:
+                    files[name] = content
+                    manifest['sha256'][name] = hashlib.sha256(content).hexdigest()
+                files['manifest.json'] = json.dumps(manifest).encode()
+                with zipfile.ZipFile(path, 'w') as archive:
+                    for name, data in files.items():
+                        archive.writestr(name, data)
+                path.with_suffix('.zip.sha256').write_text(
+                    f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n', encoding='ascii')
+                with self.assertRaisesRegex(ValueError, 'package skill mismatch'):
+                    assemble(self.source, self.output, self.commit)
+                self.assertFalse(self.output.exists())
 
     def test_tagged_release(self):
         tag = f'v{self.version}'

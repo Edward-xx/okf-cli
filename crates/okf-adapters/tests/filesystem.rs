@@ -240,3 +240,52 @@ fn config_os_lock_rejects_active_owner_and_reuses_abandoned_file() {
     assert!(path.exists());
     assert_eq!(registry.list().unwrap().len(), 1);
 }
+
+#[test]
+fn explicit_paths_cannot_traverse_directory_links() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real");
+    let alias = root.path().join("alias");
+    fs::create_dir_all(real.join("nested")).unwrap();
+    fs::write(real.join("note.md"), "---\ntype: Note\n---\nbody").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "New-Item -ItemType Junction -Path '{}' -Target '{}' | Out-Null",
+                    alias.display(),
+                    real.display()
+                ),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let b = binding(root.path());
+    for path in ["alias", "alias/nested"] {
+        assert_eq!(
+            Filesystem
+                .list(&b, path, &mut ScanBudget::new(100, &control()))
+                .unwrap_err()
+                .code,
+            "DIRECTORY_LINK"
+        );
+    }
+    assert_eq!(
+        Filesystem
+            .read(&b, "alias/note.md", 1024, &control())
+            .unwrap_err()
+            .code,
+        "DIRECTORY_LINK"
+    );
+    assert!(Filesystem
+        .read(&b, "real/note.md", 1024, &control())
+        .is_ok());
+    #[cfg(windows)]
+    fs::remove_dir(&alias).unwrap();
+}

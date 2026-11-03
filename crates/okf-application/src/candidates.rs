@@ -29,22 +29,13 @@ pub fn trigrams(text: &str) -> BTreeSet<String> {
 }
 
 /// None means this document must always be considered as a fallback candidate.
-/// All possible expiry values preserve time-dependent card matching.
 pub fn candidate_data(path: &str, raw: &str) -> Result<(String, Option<BTreeSet<String>>)> {
     let doc = Document::parse(raw)?;
     let metadata = serde_json::to_string(&doc.frontmatter).map_err(okf_core::Error::io)?;
     let id = path.strip_suffix(".md").unwrap_or(path);
-    let mut card = doc.card(id, DateTime::UNIX_EPOCH);
+    let card = doc.card(id, DateTime::UNIX_EPOCH);
     let mut grams = BTreeSet::new();
-    let mut texts = vec![raw[doc.body_start..].to_lowercase()];
-    for expiry in ["current", "expired", "unspecified", "unknown"] {
-        card.expiry = expiry.into();
-        texts.push(
-            serde_json::to_string(&card)
-                .map_err(okf_core::Error::io)?
-                .to_lowercase(),
-        );
-    }
+    let texts = [raw[doc.body_start..].to_lowercase(), card.search_text()];
     for text in texts {
         let chars: Vec<_> = text.chars().collect();
         for window in chars.windows(3) {

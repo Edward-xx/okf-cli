@@ -10,10 +10,7 @@ import tempfile
 import tomllib
 import zipfile
 
-
-def require(condition, message):
-    if not condition:
-        raise SystemExit(message)
+from assemble_release import SKILL_FILES, require
 
 
 root = Path(__file__).resolve().parents[1]
@@ -36,7 +33,8 @@ with tempfile.TemporaryDirectory(prefix='okf-package-check-') as temporary:
     installed = Path(temporary) / 'skill'
     subprocess.run([str(binary), 'skill', 'install', str(installed)], env=env, cwd=temporary,
                    check=True, stdout=subprocess.DEVNULL)
-    require((installed / 'SKILL.md').read_bytes() == (root / 'skills/okf-cli/SKILL.md').read_bytes(), 'rebuild binary after changing the embedded skill')
+    for name in SKILL_FILES:
+        require((installed / name).is_file() and (installed / name).read_bytes() == (root / 'skills/okf-cli' / name).read_bytes(), 'rebuild binary after changing the embedded skill')
 
 if args.tag:
     require(args.tag == f'v{version}', 'tag/workspace version mismatch')
@@ -52,8 +50,8 @@ destination.mkdir(parents=True, exist_ok=True)
 archive = destination / f'okf-cli-{version}-{target}.zip'
 files = {('okf.exe' if 'windows' in target.split('-') else 'okf'): binary,
          'LICENSE': root / 'LICENSE', 'README.md': root / 'README.md', 'CHANGELOG.md': root / 'CHANGELOG.md',
-         'skills/okf-cli/SKILL.md': root / 'skills/okf-cli/SKILL.md',
          'schemas/response.schema.json': root / 'schemas/response.schema.json'}
+files.update({f'skills/okf-cli/{name}': root / 'skills/okf-cli' / name for name in SKILL_FILES})
 files.update({f'docs/{p.name}': p for p in sorted((root / 'docs').iterdir()) if p.suffix in {'.md', '.json'}})
 files.update({p.relative_to(root).as_posix(): p for p in sorted((root / 'examples/knowledge').rglob('*')) if p.is_file()})
 manifest = {**info, 'tag': args.tag, 'sha256': {
