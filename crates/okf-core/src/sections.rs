@@ -192,15 +192,13 @@ fn decode_html_entities(value: &str) -> String {
 }
 
 fn decode_numeric_entity(body: &str) -> Option<char> {
-    let (radix, digits) = if let Some(d) = body
-        .strip_prefix("#x")
-        .or_else(|| body.strip_prefix("#X"))
-    {
-        (16, d)
-    } else {
-        let d = body.strip_prefix('#')?;
-        (10, d)
-    };
+    let (radix, digits) =
+        if let Some(d) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
+            (16, d)
+        } else {
+            let d = body.strip_prefix('#')?;
+            (10, d)
+        };
     let code = u32::from_str_radix(digits, radix).ok()?;
     char::from_u32(code)
 }
