@@ -695,10 +695,20 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     Git::init(&root, control)?;
                     root
                 } else {
-                    std::fs::canonicalize(path.as_ref().ok_or_else(|| {
+                    let path = path.as_ref().ok_or_else(|| {
                         Error::new("INVALID_ARGUMENT", "--path or --url is required", 2)
-                    })?)
-                    .map_err(Error::io)?
+                    })?;
+                    match std::fs::canonicalize(path) {
+                        Ok(root) => root,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            return Err(Error::new(
+                                "NOT_FOUND",
+                                format!("bundle path not found: {}", path.display()),
+                                3,
+                            ))
+                        }
+                        Err(error) => return Err(Error::io(error)),
+                    }
                 };
                 let scope = cli.scope.unwrap_or(Scope::Project).label();
                 let key = format!(
