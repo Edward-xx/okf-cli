@@ -271,6 +271,63 @@ fn optional_fetch(result: Result<Vec<u8>>) -> Result<()> {
     }
 }
 
+/// Return the host component of an accepted remote. URLs are handed to the SSH
+/// client, so a host beginning with `-` (for example
+/// `ssh://-oProxyCommand=id/repo.git`) would become an option for SSH versions
+/// that do not reject it themselves. Userinfo is removed first, so
+/// `ssh://user@-oProxyCommand=id/repo.git` is caught as well.
+fn remote_host(remote: &str) -> Option<&str> {
+    if let Some(rest) = remote
+        .strip_prefix("https://")
+        .or_else(|| remote.strip_prefix("ssh://"))
+    {
+        let authority = rest.split('/').next().unwrap_or("");
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        if let Some(bracketed) = host.strip_prefix('[') {
+            return Some(bracketed.split(']').next().unwrap_or(""));
+        }
+        return Some(host.split(':').next().unwrap_or(host));
+    }
+    // SCP-like `user@host:path`; only the leading `-` check is needed here.
+    let host = remote.rsplit_once('@')?.1;
+    Some(host.split(':').next().unwrap_or(host))
+}
+
+/// Validate a Git transport URL. Only HTTPS, SSH and SCP-like SSH remotes are
+/// accepted. The same rules apply to repository-controlled submodule URLs, so a
+/// `.gitmodules` file cannot reach local paths, `file://`, remote helpers or
+/// argument-like strings that the hardened Git configuration would not intend
+/// to allow (and which older Git versions may not reject).
+fn validate_remote(remote: &str) -> Result<()> {
+    let https = remote.starts_with("https://");
+    let ssh = remote.starts_with("ssh://");
+    let scp = !remote.contains("://")
+        && remote.contains('@')
+        && remote.contains(':')
+        && !remote.starts_with(['@', ':', '-']);
+    // A leading `-` would be parsed by `git fetch` as an option, not a remote.
+    // The same applies to an SSH host beginning with `-`, even when the URL
+    // itself starts with a letter (for example `ssh://user@-oProxyCommand=id/`).
+    let invalid_host = remote_host(remote).map_or(true, |host| {
+        host.is_empty()
+            || host.starts_with('-')
+            || host.chars().any(|c| c.is_control() || c.is_whitespace())
+    });
+    if remote.starts_with('-')
+        || remote.contains(['\n', '\r', '?', '#'])
+        || !(https || ssh || scp)
+        || (https && remote[8..].contains('@'))
+        || invalid_host
+    {
+        return Err(Error::new(
+            "INVALID_REMOTE",
+            "remote must be an HTTPS or SSH URL (https://, ssh://, or user@host:path) without embedded credentials, query or fragment",
+            2,
+        ));
+    }
+    Ok(())
+}
+
 fn transport_error(stderr: &str) -> Error {
     let text = stderr.to_ascii_lowercase();
     let (code, message) = if text.contains("returned error: 401")
@@ -681,22 +738,7 @@ impl Git {
         max_bytes: u64,
         max_fetch_bytes: Option<u64>,
     ) -> Result<String> {
-        let https = remote.starts_with("https://");
-        let ssh = remote.starts_with("ssh://");
-        let scp = !remote.contains("://")
-            && remote.contains('@')
-            && remote.contains(':')
-            && !remote.starts_with(['@', ':']);
-        if remote.contains(['\n', '\r', '?', '#'])
-            || !(https || ssh || scp)
-            || (https && remote[8..].contains('@'))
-        {
-            return Err(Error::new(
-                "INVALID_REMOTE",
-                "remote must be an HTTPS or SSH URL (https://, ssh://, or user@host:path) without embedded credentials, query or fragment",
-                2,
-            ));
-        }
+        validate_remote(remote)?;
         if reference.is_empty()
             || reference.starts_with('-')
             || reference.chars().any(char::is_control)
@@ -837,7 +879,11 @@ impl Git {
             let Some(submodule_url) = urls.get(path) else {
                 continue;
             };
-            let resolved = resolve_submodule_url(remote, submodule_url);
+            // `.gitmodules` is repository content, so its URL must satisfy the
+            // same transport rules as the superproject remote before any fetch.
+            let Some(resolved) = submodule_fetch_url(remote, submodule_url) else {
+                continue;
+            };
             optional_fetch(run_bounded(
                 root,
                 &[
@@ -1193,6 +1239,14 @@ fn resolve_submodule_url(remote: &str, submodule_url: &str) -> String {
     normalize_relative(&joined)
 }
 
+/// Resolve a repository-controlled submodule URL and keep it only when it is an
+/// allowed HTTPS/SSH/SCP transport. Invalid entries are skipped instead of
+/// reaching `git fetch`, matching the best-effort submodule fetch policy.
+fn submodule_fetch_url(remote: &str, submodule_url: &str) -> Option<String> {
+    let resolved = resolve_submodule_url(remote, submodule_url);
+    validate_remote(&resolved).ok().map(|()| resolved)
+}
+
 // Repository-controlled submodule URLs must not receive another host's token.
 fn submodule_credential<'a>(remote: &str, target: &str, token: Option<&'a str>) -> Option<&'a str> {
     fn authority(url: &str) -> Option<&str> {
@@ -1441,6 +1495,74 @@ mod tests {
             submodule_credential(remote, "https://trusted.example/sub", Some("secret")),
             Some("secret")
         );
+    }
+
+    #[test]
+    fn remote_validation_rejects_option_like_and_non_transport_urls() {
+        for remote in [
+            "https://github.com/owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "ssh://git@github.com:2222/owner/repo.git",
+            "ssh://[::1]/owner/repo.git",
+            "git@github.com:owner/repo.git",
+        ] {
+            assert!(validate_remote(remote).is_ok(), "{remote}");
+        }
+        for remote in [
+            "-oProxyCommand=id@github.com:owner/repo.git",
+            "--upload-pack=/bin/sh@github.com:owner/repo.git",
+            "ssh://-oProxyCommand=id/evil/repo.git",
+            "ssh://user@-oProxyCommand=id/evil/repo.git",
+            "ssh://-host/owner/repo.git",
+            "ssh:///owner/repo.git",
+            "ssh://git@/owner/repo.git",
+            "user@-host:owner/repo.git",
+            "https://-host/owner/repo.git",
+            "file:///etc/passwd",
+            "/tmp/repo",
+            "../repo",
+            "//evil.example/share",
+            "http://github.com/owner/repo.git",
+            "git://github.com/owner/repo.git",
+            "ext::sh -c id",
+            "https://user:token@github.com/owner/repo.git",
+            "https://github.com/owner/repo.git\n--upload-pack=id",
+        ] {
+            assert_eq!(
+                validate_remote(remote).unwrap_err().code,
+                "INVALID_REMOTE",
+                "{remote}"
+            );
+        }
+    }
+
+    #[test]
+    fn submodule_urls_must_not_bypass_transport_validation() {
+        let remote = "https://host.example/org/repo.git";
+        for (declared, expected) in [
+            (
+                "https://host.example/sub.git",
+                Some("https://host.example/sub.git"),
+            ),
+            ("../sub.git", Some("https://host.example/org/sub.git")),
+            (
+                "git@other.example:sub.git",
+                Some("git@other.example:sub.git"),
+            ),
+            ("file:///etc/passwd", None),
+            ("/tmp/local-repo", None),
+            ("//evil.example/share", None),
+            ("--upload-pack=id@host.example:sub.git", None),
+            ("https://user:token@host.example/sub.git", None),
+            ("ssh://-oProxyCommand=id/evil/sub.git", None),
+            ("ssh://user@-oProxyCommand=id/evil/sub.git", None),
+        ] {
+            assert_eq!(
+                submodule_fetch_url(remote, declared).as_deref(),
+                expected,
+                "{declared}"
+            );
+        }
     }
 
     #[test]
