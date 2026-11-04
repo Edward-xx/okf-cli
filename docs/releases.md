@@ -28,11 +28,11 @@ cargo install --locked --path apps/okf-cli
 
 ## 下载与安装
 
-本仓库记录的正式发行基线为 `v0.1.0`；`v0.1.0-alpha.1` 保留为历史预览版本。正式版沿用预览版的功能，没有数据库格式变更。后续版本仍需按各自迁移说明升级，不承诺任意版本间数据库兼容；升级前请备份运行目录。
+当前发行版本为 `v0.2.0`；`v0.1.0` 与 `v0.1.0-alpha.1` 保留为历史版本。正文数据库仍为 v1，候选派生数据升级至版本 2，升级步骤见下文。不承诺任意版本间数据库兼容；升级前请备份运行目录。正式发布状态以 GitHub Releases 为准。
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
-已发布的 `v0.1.0` 支持本地文件系统和公开 HTTPS Git 知识包；私有仓库认证、SSH、submodule 和 LFS 下载不在本版范围内。当前工作区的后续能力见 [实现状态](architecture.md#实现状态)，不代表已发布附件包含这些改动。确定性检索验收不代表真实 Agent 答案质量已经测量。
+`v0.2.0` 在本地文件系统和公开 HTTPS Git 知识包支持之外，增加私有 HTTPS 凭据、SSH、子模块和 LFS 下载及内容读取。完整能力与限制见 [实现状态](architecture.md#实现状态)；这些新增能力不包含在历史 `v0.1.0` 附件中。确定性检索验收不代表真实 Agent 答案质量已经测量。
 
 已发布版本从 [GitHub Releases](https://github.com/coolplayagent/okf-cli/releases) 下载。工作流产物或 Release 草稿不等同于正式发布。
 
@@ -42,9 +42,9 @@ cargo install --locked --path apps/okf-cli
 
 执行 `okf --version` 与 `okf build-info --format json` 核对版本和平台。`manifest.json` 记录版本、构建提交、源码是否有未提交修改、tag 和每个打包文件的哈希。构建时没有 Git 时来源字段为 null；正式 tag 包要求来源已知、源码干净且提交匹配。
 
-## 当前源码升级注意事项
+## 0.2.0 升级注意事项
 
-以下属于未发布源码变化，不能据此推断现有 `v0.1.0` 附件已包含修复：
+完整变更见 [变更记录](../CHANGELOG.md)。从 `0.1.0` 升级时注意以下变化：
 
 - Skill 改为入口与按需命令参考两层：`SKILL.md` 链接 `references/cli-workflows.md`。新构建的 `skill install`、CLI 包和独立 Skill ZIP 均包含两份文件；安装不覆盖任一已有目标。升级请先安装到新目录，再合并定制。旧二进制不会自动获得新参考文件。
 
