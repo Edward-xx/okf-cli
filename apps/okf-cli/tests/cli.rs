@@ -311,6 +311,39 @@ fn build_info_does_not_open_runtime_state() {
 }
 
 #[test]
+fn invalid_aliases_are_rejected_before_binding() {
+    let f = Fixture::new();
+    let long = "a".repeat(65);
+    for name in [long.as_str(), "has space", "知识"] {
+        let out = f.run(&["bundle", "add", name, "--path", "knowledge"]);
+        assert_eq!(out.status.code(), Some(2), "{name}");
+        assert_eq!(
+            value(&out)["data"]["error"]["code"],
+            "INVALID_ALIAS",
+            "{name}"
+        );
+    }
+    assert!(value(&f.run(&["bundle", "list"]))["data"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn runtime_home_must_be_absolute_and_overrides_environment() {
+    let f = Fixture::new();
+    let relative = f.run(&["--home", "relative-home", "doctor"]);
+    assert_eq!(relative.status.code(), Some(2));
+    assert_eq!(value(&relative)["data"]["error"]["code"], "INVALID_CONFIG");
+
+    let override_home = f.work.path().join("override-home");
+    fs::create_dir(&override_home).unwrap();
+    let out = f.run(&["--home", override_home.to_str().unwrap(), "doctor"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(value(&out)["data"]["home"], override_home.to_str().unwrap());
+}
+
+#[test]
 fn local_progressive_read_and_subdirectory_resolution() {
     let f = Fixture::new();
     f.bind();
