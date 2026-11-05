@@ -447,6 +447,22 @@ fn remove_preserves_bundle_and_cli_rejects_unimplemented_adapters() {
 }
 
 #[test]
+fn missing_bundle_path_reports_not_found_without_binding() {
+    let f = Fixture::new();
+    let out = f.run(&["bundle", "add", "book", "--path", "absent"]);
+    assert_eq!(out.status.code(), Some(3));
+    let response = value(&out);
+    assert_eq!(response["status"], "error");
+    assert_eq!(response["data"]["error"]["code"], "NOT_FOUND");
+    assert!(response["data"]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("absent"));
+    let listed = value(&f.run(&["bundle", "list"]));
+    assert!(listed["data"]["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn argument_errors_and_budget_errors_are_bounded_json() {
     let f = Fixture::new();
     let invalid = f.run(&["browse", "@book", "--limit", "0"]);
