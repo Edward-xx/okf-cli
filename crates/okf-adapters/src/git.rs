@@ -308,7 +308,7 @@ fn validate_remote(remote: &str) -> Result<()> {
     // A leading `-` would be parsed by `git fetch` as an option, not a remote.
     // The same applies to an SSH host beginning with `-`, even when the URL
     // itself starts with a letter (for example `ssh://user@-oProxyCommand=id/`).
-    let invalid_host = remote_host(remote).map_or(true, |host| {
+    let invalid_host = remote_host(remote).is_none_or(|host| {
         host.is_empty()
             || host.starts_with('-')
             || host.chars().any(|c| c.is_control() || c.is_whitespace())
