@@ -2,6 +2,12 @@
 
 ## 未发布
 
+### 安全
+
+- 修复 Git 子模块 URL 未经传输校验的问题：`.gitmodules` 属于远程仓库控制的内容，其中的 URL 现在必须满足与主仓库相同的 HTTPS/SSH/SCP 规则；整体以 `-` 开头、SSH 主机名以 `-` 开头（如 `ssh://-oProxyCommand=id/...`）、`file://`、本地路径、`ext::`、内嵌凭据及含控制字符的地址会被跳过，避免 `git fetch`/`ssh` 参数注入和传输策略绕过。
+- 增加 `validate_remote` 与 `submodule_fetch_url` 单元测试，覆盖合法 HTTPS/SSH/SCP 以及选项式、本地路径、远程助手等非法输入。
+
+### 文档
 - 同步架构文档的 workspace 版本与 Skill、发行能力说明，补充版本来源及发行兼容范围的引用。
 
 ## 0.2.0 — 2026-11-04
