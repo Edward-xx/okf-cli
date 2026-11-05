@@ -257,7 +257,18 @@ fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象�
 | `content_sha256` | 64 位小写十六进制 SHA-256 |
 | `upstream_revision` | Git 提交字符串或 null，不省略 |
 
-元数据结果与 `data` 继续允许扩展字段。错误响应不要求成功结果字段；全文条目和其他命令不套用这组元数据卡片约束。Schema 检查字段结构，不证明引用目标存在、哈希对应当前文件或结果语义正确。
+`search --full-text` 与 `context --query --content` 在 `ok` 或 `partial` 状态下同样要求 `query`、`mode`、`evaluated_at` 和数组 `items`。`mode` 为 `full_text`；`disclosure` 在两个命令中分别为 `indexed_snippets` 和 `selected_excerpts`。条目共用上表的卡片与来源字段，但不要求元数据结果专用的 `kind`，并增加以下必填字段：
+
+| 字段 | 结构 |
+| --- | --- |
+| `generation` | 非空字符串，标识该条目所属的索引版本 |
+| `score` | 非负整数 |
+| `selection_reason` | 非空字符串 |
+| `snippet` | 对象，必须包含非空字符串 `path`、非负整数 `byte_start` 和 `byte_end`、字符串 `text`；正文为空时文本可为空 |
+
+无命中或预算不足时，全文结果数组可为空。单包响应的 `generation` 与多包响应的 `generations` 保持各自形式；未读到索引的部分结果不要求顶层 `generation`。卡片、片段与 `data` 继续允许扩展字段。错误响应不要求成功结果字段；其他命令和元数据上下文不套用全文条目约束。
+
+Schema 只检查字段结构，不能比较字节区间端点、证明引用目标存在、哈希对应当前文件或结果语义正确。`scripts/check_schema.py` 另将实际全文响应的片段范围与 UTF-8 原文字节、SHA-256 和对应知识包的 generation 逐项比对。
 
 文件系统读取视图为 `observed`，上游修订为 null；Git 视图为 `snapshot`，`upstream_revision` 是完整 commit ID。Git 原文、卡片与 cursor 均携带或绑定提交。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。实时命令的 `body`、`graph` 是保守覆盖声明；索引的完整正文覆盖仅描述已发布的索引版本。
 

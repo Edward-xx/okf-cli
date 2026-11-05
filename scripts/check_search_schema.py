@@ -1,4 +1,4 @@
-"""Exercise the metadata-search response contract with isolated synthetic data."""
+"""Exercise search response contracts with isolated synthetic data."""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -122,15 +122,151 @@ class MetadataSearchSchemaChecks(unittest.TestCase):
                 response.update(status='error', data=data)
                 self.validator.validate(response)
 
-    def test_other_commands_and_full_text_do_not_use_metadata_item_constraints(self):
+    def test_other_commands_do_not_use_metadata_item_constraints(self):
         for command, data in (('browse', {'items': [{'kind': 'directory'}]}),
                                ('read', {'content': 'original bytes'}),
-                               ('context', {'mode': 'metadata', 'items': [{'ref': '@book/note'}]}),
-                               ('search', {'mode': 'full_text', 'items': [{'snippet': {}}]})):
+                               ('context', {'mode': 'metadata', 'items': [{'ref': '@book/note'}]})):
             with self.subTest(command=command, data=data):
                 response = deepcopy(self.response)
                 response.update(command=command, data=data)
                 self.validator.validate(response)
+
+
+class IndexedSearchSchemaChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[1]
+        schema = json.loads((root / 'schemas/response.schema.json').read_text(encoding='utf-8'))
+        Draft202012Validator.check_schema(schema)
+        cls.validator = Draft202012Validator(schema)
+
+    def responses(self):
+        for command in ('search', 'context'):
+            for status in ('ok', 'partial'):
+                yield {
+                    'schema_version': '2.0', 'request_id': 'synthetic-indexed-schema-test',
+                    'command': command, 'status': status,
+                    'data': {
+                        'query': '认证', 'mode': 'full_text',
+                        'evaluated_at': '2030-01-01T00:00:00Z',
+                        'disclosure': 'indexed_snippets' if command == 'search' else 'selected_excerpts',
+                        'generation': 'b' * 64,
+                        'items': [{
+                            'id': '服务/认证', 'type': 'Service', 'title': '认证服务',
+                            'description': None, 'tags': [], 'trust': 'unverified',
+                            'status': 'stable', 'expiry': 'unspecified',
+                            'ref': '@book/服务/认证', 'bundle_id': 'bundle-synthetic',
+                            'content_sha256': 'a' * 64, 'upstream_revision': None,
+                            'generation': 'b' * 64, 'score': 1,
+                            'selection_reason': 'all query terms matched',
+                            'snippet': {'path': '服务/认证.md', 'byte_start': 30,
+                                        'byte_end': 40, 'text': '认证🙂'},
+                        }],
+                    },
+                    'bundles': [],
+                    'page': {'returned': 1, 'total': None if status == 'partial' else 1,
+                             'has_more': False, 'next_cursor': None},
+                    'budget': {}, 'diagnostics': [], 'next': [],
+                }
+
+    def test_single_multi_bundle_candidate_and_empty_results_are_valid(self):
+        for response in self.responses():
+            for variant in ('single', 'multi', 'candidate', 'empty'):
+                with self.subTest(command=response['command'], status=response['status'], variant=variant):
+                    result = deepcopy(response)
+                    if variant == 'multi':
+                        result['data']['generations'] = {
+                            'book': result['data'].pop('generation'), 'other': 'c' * 64}
+                        other = deepcopy(result['data']['items'][0])
+                        other.update(ref='@other/服务/认证', bundle_id='other-synthetic', generation='c' * 64)
+                        result['data']['items'].append(other)
+                        result['page'].update(returned=2, total=None if result['status'] == 'partial' else 2)
+                    elif variant == 'candidate':
+                        result['data']['retrieval_strategy'] = 'candidates-v1'
+                        result['budget'] = {'candidate_rows_limit': 100, 'candidate_rows_read': 1}
+                    elif variant == 'empty':
+                        result['data']['items'] = []
+                        result['data'].pop('generation')
+                        result['page'].update(returned=0, total=None if result['status'] == 'partial' else 0)
+                    self.validator.validate(result)
+
+    def test_nullable_fields_empty_body_and_extensions_are_valid(self):
+        for response in self.responses():
+            item = response['data']['items'][0]
+            item.update(type='Custom Type', status='custom-status', description='自定义摘要',
+                        upstream_revision='c' * 40, extension={'producer': 'synthetic'})
+            item['snippet'].update(byte_start=30, byte_end=30, text='', extension=True)
+            response['data']['extension'] = {'enabled': True}
+            with self.subTest(command=response['command'], status=response['status']):
+                self.validator.validate(response)
+
+    def test_required_data_card_provenance_and_snippet_fields(self):
+        for response in self.responses():
+            for section, fields in (
+                    ('data', ('query', 'mode', 'evaluated_at', 'disclosure', 'items')),
+                    ('item', tuple(response['data']['items'][0])),
+                    ('snippet', ('path', 'byte_start', 'byte_end', 'text'))):
+                for field in fields:
+                    with self.subTest(command=response['command'], status=response['status'],
+                                      section=section, field=field):
+                        result = deepcopy(response)
+                        target = result['data']
+                        if section != 'data':
+                            target = target['items'][0]
+                        if section == 'snippet':
+                            target = target['snippet']
+                        del target[field]
+                        with self.assertRaises(ValidationError):
+                            self.validator.validate(result)
+
+    def test_invalid_field_types_and_values_are_rejected(self):
+        invalid = {
+            'data': (('query', ''), ('query', 1), ('evaluated_at', 1),
+                     ('mode', None), ('mode', 'metadata'), ('mode', 'fulltext'),
+                     ('disclosure', None), ('disclosure', 'metadata_candidates'),
+                     ('items', {}), ('items', [None])),
+            'item': (('id', 1), ('type', ''), ('title', None), ('description', 1),
+                     ('tags', 'tag'), ('tags', [1]), ('trust', 'verified'), ('status', None),
+                     ('expiry', 'fresh'), ('ref', 'book/note'), ('bundle_id', 1),
+                     ('content_sha256', 'g' * 64), ('content_sha256', 'a' * 63),
+                     ('upstream_revision', 1), ('generation', ''), ('generation', None),
+                     ('score', -1), ('score', 1.5), ('score', True),
+                     ('selection_reason', None), ('selection_reason', ''), ('snippet', None)),
+            'snippet': (('path', ''), ('path', 1), ('byte_start', -1), ('byte_start', 0.5),
+                        ('byte_end', -1), ('byte_end', True), ('text', None)),
+        }
+        for response in self.responses():
+            for section, fields in invalid.items():
+                for field, value in fields:
+                    with self.subTest(command=response['command'], status=response['status'],
+                                      section=section, field=field, value=value):
+                        result = deepcopy(response)
+                        target = result['data']
+                        if section != 'data':
+                            target = target['items'][0]
+                        if section == 'snippet':
+                            target = target['snippet']
+                        target[field] = value
+                        with self.assertRaises(ValidationError):
+                            self.validator.validate(result)
+
+    def test_disclosure_matches_the_command(self):
+        for response in self.responses():
+            response['data']['disclosure'] = (
+                'selected_excerpts' if response['command'] == 'search' else 'indexed_snippets')
+            with self.subTest(command=response['command'], status=response['status']):
+                with self.assertRaises(ValidationError):
+                    self.validator.validate(response)
+
+    def test_errors_and_other_commands_do_not_require_indexed_results(self):
+        for response in self.responses():
+            for data in ({}, {'mode': 'full_text'}):
+                with self.subTest(command=response['command'], data=data):
+                    result = deepcopy(response)
+                    result.update(status='error', data=data)
+                    self.validator.validate(result)
+            response.update(command='browse', data={'mode': 'full_text', 'items': [{}]})
+            self.validator.validate(response)
 
 
 if __name__ == '__main__':
