@@ -41,13 +41,37 @@
         }
       }]
     }}}
+  }, {
+    "if": {
+      "properties": {
+        "command": {"enum": ["search", "context"]},
+        "status": {"enum": ["ok", "partial"]},
+        "data": {"anyOf": [
+          {"required": ["mode"], "properties": {"mode": {"const": "full_text"}}},
+          {"required": ["disclosure"], "properties": {"disclosure": {"enum": ["indexed_snippets", "selected_excerpts"]}}}
+        ]}
+      }
+    },
+    "then": {
+      "properties": {"data": {
+        "required": ["query", "mode", "items", "evaluated_at", "disclosure"],
+        "properties": {
+          "mode": {"const": "full_text"},
+          "query": {"type": "string", "minLength": 1},
+          "items": {"type": "array", "items": {"$ref": "#/$defs/indexed_search_item"}}
+        }
+      }},
+      "if": {"properties": {"command": {"const": "search"}}},
+      "then": {"properties": {"data": {"properties": {"disclosure": {"const": "indexed_snippets"}}}}},
+      "else": {"properties": {"data": {"properties": {"disclosure": {"const": "selected_excerpts"}}}}}
+    }
   }],
   "$defs": {
-    "metadata_search_item": {
+    "search_card": {
       "type": "object",
       "required": [
         "id", "type", "title", "description", "tags", "trust", "status", "expiry",
-        "kind", "ref", "bundle_id", "content_sha256", "upstream_revision"
+        "ref", "bundle_id", "content_sha256", "upstream_revision"
       ],
       "properties": {
         "id": {"type": "string"},
@@ -58,11 +82,34 @@
         "trust": {"enum": ["unverified", "machine-confirmed", "human-reviewed"]},
         "status": {"type": "string"},
         "expiry": {"enum": ["current", "expired", "unspecified", "unknown"]},
-        "kind": {"const": "concept"},
         "ref": {"type": "string", "pattern": "^@[^/]+/"},
         "bundle_id": {"type": "string"},
         "content_sha256": {"type": "string", "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
         "upstream_revision": {"type": ["string", "null"]}
+      }
+    },
+    "metadata_search_item": {
+      "allOf": [{"$ref": "#/$defs/search_card"}],
+      "required": ["kind"],
+      "properties": {"kind": {"const": "concept"}}
+    },
+    "indexed_search_item": {
+      "allOf": [{"$ref": "#/$defs/search_card"}],
+      "required": ["generation", "score", "selection_reason", "snippet"],
+      "properties": {
+        "generation": {"type": "string", "minLength": 1},
+        "score": {"type": "integer", "minimum": 0},
+        "selection_reason": {"type": "string", "minLength": 1},
+        "snippet": {
+          "type": "object",
+          "required": ["path", "byte_start", "byte_end", "text"],
+          "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "byte_start": {"type": "integer", "minimum": 0},
+            "byte_end": {"type": "integer", "minimum": 0},
+            "text": {"type": "string"}
+          }
+        }
       }
     }
   },

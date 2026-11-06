@@ -34,7 +34,7 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 | 维度 | 验证入口 | 可以证明的范围 |
 | --- | --- | --- |
 | 模型与应用行为 | Rust workspace 测试 | 解析、诊断、预算、排序、分页及故障回归 |
-| 响应契约 | `scripts/check_schema.py`（包含 `check_search_schema.py`） | 实际响应及元数据搜索卡片的必填字段、类型、空值和扩展兼容；包含隔离的合成反例，不代表每个业务字段均有完整 Schema |
+| 响应契约 | `scripts/check_schema.py`（包含 `check_search_schema.py`） | 元数据搜索、全文搜索与正文上下文的卡片、来源、索引版本和片段结构；覆盖空结果、部分结果、候选策略及多包，另核对实际片段的原文字节、哈希与 generation；包含隔离的合成反例，不代表每个业务字段均有完整 Schema |
 | 索引与目录范围 | `scripts/check_index.py`、`scripts/check_scope.py` | 完整性、修复、离线读取与目录范围隔离 |
 | 候选检索 | `scripts/evaluate_index_candidates.py` | 实际 CLI 与路径扫描结果对照、预算、损坏、兼容和重同步 |
 | Git 传输与缓存 | `scripts/check_git_https.py`、`scripts/check_git_integrity.py` | 本地真实 HTTPS 传输、凭据隔离、失败恢复、子模块和 LFS 完整性 |
