@@ -1,6 +1,7 @@
 ---
 name: okf-cli
 description: Retrieve and cite knowledge from bound OKF bundles using the okf CLI. Use when a task calls for OKF project knowledge, decisions, architecture, or runbooks, including indexed offline retrieval and requested validation.
+version: "0.3.0"
 ---
 
 # Consume OKF knowledge
