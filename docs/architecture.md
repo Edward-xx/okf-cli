@@ -170,7 +170,7 @@ Git 绑定保存仓库位置、包根、请求 ref 和已解析 commit。普通�
 
 | 对象 | 当前值或规则 |
 | --- | --- |
-| workspace 包版本 | `0.2.0`，以根目录 [Cargo.toml](../Cargo.toml) 的 `workspace.package.version` 为准；同版本构建仍需结合 `build-info` 的来源提交区分 |
+| workspace 包版本 | `0.3.0`，以根目录 [Cargo.toml](../Cargo.toml) 的 `workspace.package.version` 为准；同版本构建仍需结合 `build-info` 的来源提交区分 |
 | 响应 envelope | `schema_version: 2.0` |
 | 正文数据库 | SQLite `user_version = 1` |
 | 候选派生数据 | 版本 2，只从检索字段值和正文建立候选；响应策略名仍为 `candidates-v1` |

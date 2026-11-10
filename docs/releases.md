@@ -28,7 +28,7 @@ cargo install --locked --path apps/okf-cli
 
 ## 下载与安装
 
-当前发行版本为 `v0.2.0`；`v0.1.0` 与 `v0.1.0-alpha.1` 保留为历史版本。正文数据库仍为 v1，候选派生数据升级至版本 2，升级步骤见下文。不承诺任意版本间数据库兼容；升级前请备份运行目录。正式发布状态以 GitHub Releases 为准。
+当前源码版本为 `v0.3.0`，修复 Git 传输安全、LFS 暂存配额与缺失路径诊断，详见 [release notes](release-notes-v0.3.0.txt)。正文数据库仍为 v1，候选派生数据仍为版本 2；从 `0.1.0` 升级的步骤见下文。不承诺任意版本间数据库兼容；升级前请备份运行目录。正式发布状态以 GitHub Releases 为准。
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
