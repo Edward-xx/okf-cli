@@ -7,6 +7,7 @@ use okf_application::{
 use okf_core::{sha256, Diagnostic, Error, Result};
 use serde_json::json;
 use std::{
+    ffi::{OsStr, OsString},
     io::Write,
     path::PathBuf,
     process::ExitCode,
@@ -484,16 +485,29 @@ fn parse_credential(value: &str) -> std::result::Result<CredentialRef, String> {
     }
 }
 
+fn os_eq(arg: &OsStr, value: &str) -> bool {
+    arg == OsStr::new(value)
+}
+
+// Arguments can be arbitrary OS strings. Inspect only the ASCII flags here so a
+// non-Unicode argument reaches Clap as an argument error instead of panicking.
+fn json_requested(args: &[OsString]) -> bool {
+    args.windows(2)
+        .any(|pair| os_eq(&pair[0], "--format") && os_eq(&pair[1], "json"))
+        || args.iter().any(|arg| os_eq(arg, "--format=json"))
+}
+
 // Clap can reject the request before Cli exists. Honor a valid output limit
 // even on that path, taking the smallest limit if arguments are duplicated.
-fn argument_output_limit(args: &[String]) -> usize {
+fn argument_output_limit(args: &[OsString]) -> usize {
     args.iter()
         .enumerate()
         .filter_map(|(index, arg)| {
-            let value = if arg == "--max-output-bytes" {
-                args.get(index + 1).map(String::as_str)
+            let value = if os_eq(arg, "--max-output-bytes") {
+                args.get(index + 1).and_then(|value| value.to_str())
             } else {
-                arg.strip_prefix("--max-output-bytes=")
+                arg.to_str()
+                    .and_then(|arg| arg.strip_prefix("--max-output-bytes="))
             };
             value.and_then(|value| parse_output(value).ok())
         })
@@ -1127,11 +1141,8 @@ fn emit(mut response: Response, format: Format, limit: usize) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    let json_requested = args
-        .windows(2)
-        .any(|p| p[0] == "--format" && p[1] == "json")
-        || args.iter().any(|s| s == "--format=json");
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let json_requested = json_requested(&args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) if error.use_stderr() && json_requested => {

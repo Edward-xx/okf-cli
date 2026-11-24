@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::{
+    ffi::OsString,
     fs,
     path::Path,
     process::{Command, Output},
@@ -544,6 +545,56 @@ fn argument_errors_honor_output_limit_and_preserve_error_code() {
             assert_eq!(value(&output)["data"]["error"]["code"], "INVALID_ARGUMENT");
         }
     }
+}
+
+fn non_unicode_argument() -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![0xff])
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0xD800])
+    }
+}
+
+#[test]
+fn non_unicode_arguments_are_bounded_argument_errors() {
+    let f = Fixture::new();
+    let bad = non_unicode_argument();
+    for prefix in [
+        vec!["--format", "json"],
+        vec!["--format=json"],
+        vec!["--format", "json", "read"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_okf"))
+            .current_dir(f.work.path())
+            .env("OKF_HOME", f.home.path())
+            .args(prefix)
+            .args(["--max-output-bytes", "1024"])
+            .arg(&bad)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.len() <= 1024);
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["schema_version"], "2.0");
+        assert_eq!(response["command"], "arguments");
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["data"]["error"]["code"], "INVALID_ARGUMENT");
+    }
+    let plain = Command::new(env!("CARGO_BIN_EXE_okf"))
+        .current_dir(f.work.path())
+        .env("OKF_HOME", f.home.path())
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert_eq!(plain.status.code(), Some(2));
+    assert!(plain.stdout.is_empty());
+    assert!(!plain.stderr.is_empty());
 }
 
 #[test]
