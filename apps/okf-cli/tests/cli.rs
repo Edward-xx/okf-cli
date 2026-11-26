@@ -366,6 +366,107 @@ fn local_progressive_read_and_subdirectory_resolution() {
     assert_eq!(value(&f.run(&["validate", "book"]))["data"]["failures"], 0);
 }
 
+fn add_title_only_concepts(f: &Fixture, entries: &[(&str, &str)]) {
+    for (directory, title) in entries {
+        let dir = f.work.path().join("knowledge").join(directory);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("note.md"),
+            format!("---\ntype: Note\ntitle: {title}\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn live_directory_filter_matches_literally_and_rejects_invalid_paths() {
+    let f = Fixture::new();
+    add_title_only_concepts(
+        &f,
+        &[
+            ("a%b", "needle percent"),
+            ("a_b", "needle underscore"),
+            ("axb", "needle decoy"),
+        ],
+    );
+    f.bind();
+
+    for (directory, reference) in [
+        ("a%b", "@book/a%b/note"),
+        ("a_b", "@book/a_b/note"),
+        ("axb", "@book/axb/note"),
+    ] {
+        let response = value(&f.run(&["search", "needle", "--bundle", "book", "--dir", directory]));
+        assert_eq!(response["data"]["directory"], directory);
+        assert_eq!(response["bundles"][0]["coverage"]["scope"], directory);
+        let items = response["data"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{directory}");
+        assert_eq!(items[0]["ref"], reference);
+    }
+
+    let trailing = f.run(&["search", "needle", "--bundle", "book", "--dir", "services/"]);
+    assert_eq!(trailing.status.code(), Some(0));
+    assert!(value(&trailing)["data"]["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    for directory in ["services//", "", "a\\b", "/abs"] {
+        let out = f.run(&["search", "needle", "--bundle", "book", "--dir", directory]);
+        assert_eq!(out.status.code(), Some(2), "{directory}");
+        assert_eq!(
+            value(&out)["data"]["error"]["code"],
+            "INVALID_ARGUMENT",
+            "{directory}"
+        );
+    }
+}
+
+#[test]
+fn indexed_directory_filter_reports_complete_zero_hits_for_unknown_range() {
+    let f = Fixture::new();
+    add_title_only_concepts(
+        &f,
+        &[
+            ("a%b", "needle percent"),
+            ("a_b", "needle underscore"),
+            ("axb", "needle decoy"),
+        ],
+    );
+    f.bind();
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+
+    let missing = value(&f.run(&[
+        "search",
+        "body",
+        "--bundle",
+        "book",
+        "--full-text",
+        "--dir",
+        "nope",
+    ]));
+    assert_eq!(missing["status"], "ok");
+    assert_eq!(missing["data"]["mode"], "full_text");
+    assert_eq!(missing["data"]["directory"], "nope");
+    assert!(missing["data"]["items"].as_array().unwrap().is_empty());
+    assert_eq!(missing["page"]["total"], 0);
+    assert_eq!(missing["bundles"][0]["coverage"]["body"], "complete");
+    assert_eq!(missing["bundles"][0]["indexed_documents_scanned"], 0);
+
+    let filtered = value(&f.run(&[
+        "search",
+        "body",
+        "--bundle",
+        "book",
+        "--full-text",
+        "--dir",
+        "a%b",
+    ]));
+    let items = filtered["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["ref"], "@book/a%b/note");
+}
+
 #[test]
 fn unicode_read_pages_reconstruct_original_and_reject_changed_document() {
     let f = Fixture::new();
