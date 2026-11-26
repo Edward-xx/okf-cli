@@ -42,6 +42,12 @@ cargo install --locked --path apps/okf-cli
 
 执行 `okf --version` 与 `okf build-info --format json` 核对版本和平台。`manifest.json` 记录版本、构建提交、源码是否有未提交修改、tag 和每个打包文件的哈希。构建时没有 Git 时来源字段为 null；正式 tag 包要求来源已知、源码干净且提交匹配。
 
+## 未发布：审核等级修复
+
+当前工作区已修复 [#39](https://github.com/coolplayagent/okf-cli/issues/39)：历史审核以及缺少或具有非法时间的事件不再提升审核等级，筛选结果可能因此减少。具体规则与诊断见 [派生与覆盖](cli-contract.md#派生与覆盖)。该修复尚未发布，包版本 `0.3.0` 不代表完整 OKF v0.3 格式兼容。
+
+正文索引保存原文，候选索引保存完整 frontmatter，查询时重新派生等级；倒排词项不含审核等级。本次升级无需重建索引，也不改变数据库版本或 generation。旧二进制生成的索引已由新版离线读取验证，证据见 [最近验证](verification.md#最近验证)。
+
 ## 0.2.0 升级注意事项
 
 完整变更见 [变更记录](../CHANGELOG.md)。从 `0.1.0` 升级时注意以下变化：

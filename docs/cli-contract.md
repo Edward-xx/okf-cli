@@ -305,7 +305,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 ## OKF 检查矩阵
 
-本节定义结构检查、元数据与正文诊断，依据为固定提交的 [OKF v0.2 规范](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md)。命令与响应规则见前文的 [命令](#命令) 和 [JSON 响应](#json-响应)。
+本节定义结构检查、元数据与正文诊断，基线为固定提交的 [OKF v0.2 规范](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md)；审核时序采用 v0.3 §5.2–5.3，见 [派生与覆盖](#派生与覆盖)。命令与响应规则见前文的 [命令](#命令) 和 [JSON 响应](#json-响应)。
 
 ### 诊断与消费
 
@@ -313,7 +313,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 - `error` 表示结构不合规或操作故障，是否终止请求由命令决定。例如浏览跳过坏概念并返回部分结果，显式 `read --raw` 可以返回带结构错误诊断的原文。
 - `warning` 表示元数据或正文中的质量建议，包括来源归因问题与断链。警告不拒绝概念，也不降低元数据覆盖；默认不改变退出码，显式启用 `--max-warnings` 时按 [质量门槛](cli-contract.md#退出码) 判定。
-- 可选字段缺失、未知 `type`、未知扩展字段和缺失索引不会触发元数据警告。未知字段保持原值，原文不被重写。
+- 整个可选元数据族缺失、未知 `type`、未知扩展字段和缺失索引不会触发元数据警告。对象内部的必填字段及审核时序依赖按下表检查。未知字段保持原值，原文不被重写。
 
 诊断字段定义见 [JSON 响应](cli-contract.md#json-响应)。下表中的字段级警告通过 `field` 定位，例如 `/verified/0/at`。
 
@@ -327,6 +327,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | `tags` | 出现时为字符串列表，定位到无效元素；§4.1 | `INVALID_METADATA_TYPE` | warning |
 | `generated` | 出现时为对象，`by` 为非空 Actor；`at` 可省略，出现时检查时间；§5.2、§7 | 类型、必填字段、Actor 或时间诊断 | warning |
 | `verified` | 对象与单元素列表等价；每个事件为对象，包含 `by` 与 `at`；§5.2、§7 | 类型、必填字段、Actor 或时间诊断 | warning |
+| 审核时序 | `generated` 与 `verified` 同时存在，但无法解析 `generated.at`；定位到 `/generated` | `INDETERMINATE_VERIFICATION_TIME` | warning |
 | `sources` | 出现时为对象列表，每项包含非空 `resource`；URI、包内路径与范围描述均可作为材料标识；§5.1 | `INVALID_METADATA_TYPE`、`MISSING_METADATA_FIELD`、`INVALID_METADATA_VALUE` | warning |
 | 来源标识与文字字段 | `id`、`title`、`author` 出现时为字符串；`id` 非空且在概念内唯一；§5.1 | `INVALID_METADATA_TYPE`、`INVALID_METADATA_VALUE`、`DUPLICATE_SOURCE_ID` | warning |
 | 来源信号 | `usage_count` 为非负整数；`last_modified` 为带时区时间；§5.1 | `INVALID_METADATA_VALUE`、`INVALID_TIMESTAMP` | warning |
@@ -342,7 +343,11 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 ### 派生与覆盖
 
-卡片只从有效 Actor 标识派生审核层级；无有效核验者时为 `unverified`，人类核验者优先于机器核验者。缺少或非字符串 `status` 派生为 `stable`；未知字符串状态原样保留并附警告。非法 `stale_after` 派生为 `unknown`，到期判断使用 `now >= stale_after`。
+卡片只从具有有效 Actor 和可解析 `at` 的当前审核事件派生审核层级：`generated` 不存在，或审核时间不早于 `generated.at`。无当前有效事件时为 `unverified`；只有非人工事件时为 `machine-confirmed`；存在当前人工审核时为 `human-reviewed`，即使另有更晚的机器审核。`generated` 存在但时间缺失、非法或对象格式错误时，派生为 `unverified`，诊断见上表。历史事件保留在原文中。
+
+这实现了 OKF v0.3 的审核时序规则，不代表完整 v0.3 兼容；纯日期与扩展 Actor scheme 仍受上述解析规则限制。等级是声明性信号，不认证审核者身份。升级与索引兼容说明见 [审核等级修复](releases.md#未发布审核等级修复)。
+
+缺少或非字符串 `status` 派生为 `stable`；未知字符串状态原样保留并附警告。非法 `stale_after` 派生为 `unknown`，到期判断使用 `now >= stale_after`。
 
 ### 正文链接与来源脚注
 

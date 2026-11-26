@@ -165,6 +165,81 @@ fn multi_bundle_queries_share_budgets_and_isolate_missing_indexes() {
 }
 
 #[test]
+fn current_verification_is_consistent_in_live_and_persisted_queries() {
+    let f = Fixture::new();
+    f.bind();
+    for (name, verified) in [
+        ("old", "{by: 'human:alice', at: '2026-10-01T00:00:00Z'}"),
+        ("missing", "{by: 'human:alice'}"),
+        ("human", "{by: 'human:alice', at: '2026-11-20T00:00:00Z'}"),
+        ("machine", "[{by: 'human:alice', at: '2026-10-01T00:00:00Z'}, {by: 'process:ci', at: '2026-11-21T00:00:00Z'}]"),
+    ] {
+        fs::write(f.work.path().join(format!("knowledge/{name}.md")),
+            format!("---\ntype: Note\ntitle: verification\ngenerated: {{by: agent/1, at: '2026-11-20T00:00:00Z'}}\nverified: {verified}\n---\nverification evidence\n")).unwrap();
+    }
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    for offline in [false, true] {
+        if offline {
+            fs::rename(
+                f.work.path().join("knowledge"),
+                f.work.path().join("offline"),
+            )
+            .unwrap();
+        }
+        for (base, supports_offline) in [
+            (&["search", "verification"][..], false),
+            (&["search", "verification", "--full-text"][..], true),
+            (
+                &[
+                    "search",
+                    "verification",
+                    "--full-text",
+                    "--candidate-budget",
+                    "10000",
+                ][..],
+                true,
+            ),
+            (
+                &["context", "--query", "verification", "--content"][..],
+                true,
+            ),
+        ] {
+            if offline && !supports_offline {
+                continue;
+            }
+            for (tier, expected) in [
+                ("unverified", &["missing", "old"][..]),
+                ("human-reviewed", &["human"][..]),
+                ("machine-confirmed", &["machine"][..]),
+            ] {
+                let mut args = base.to_vec();
+                args.extend(["--bundle", "book", "--trust", tier]);
+                let out = f.run(&args);
+                assert_eq!(
+                    out.status.code(),
+                    Some(0),
+                    "{:?}: {}",
+                    args,
+                    String::from_utf8_lossy(&out.stdout)
+                );
+                let response = value(&out);
+                let mut ids: Vec<_> = response["data"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        assert_eq!(i["trust"], tier);
+                        i["id"].as_str().unwrap()
+                    })
+                    .collect();
+                ids.sort();
+                assert_eq!(ids, expected, "{args:?}, offline={offline}");
+            }
+        }
+    }
+}
+
+#[test]
 fn lifecycle_filters_use_request_time_in_live_and_offline_queries() {
     let f = Fixture::new();
     f.bind();

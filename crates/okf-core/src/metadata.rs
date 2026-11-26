@@ -6,6 +6,53 @@ use std::collections::BTreeSet;
 // A malformed array must not allocate one diagnostic per element without bound.
 const MAX_WARNINGS: usize = 64;
 
+fn event_time(event: &Value) -> Option<DateTime<FixedOffset>> {
+    event.get("at").and_then(Value::as_str).and_then(timestamp)
+}
+
+// Absence is different from an event whose content-update time is unknown.
+fn generated_time(
+    frontmatter: &Map<String, Value>,
+) -> std::result::Result<Option<DateTime<FixedOffset>>, ()> {
+    match frontmatter.get("generated") {
+        None => Ok(None),
+        Some(event) => event_time(event).map(Some).ok_or(()),
+    }
+}
+
+/// Derive the advisory tier only from complete, current verification events.
+pub(crate) fn trust_tier(frontmatter: &Map<String, Value>) -> &'static str {
+    let Ok(generated) = generated_time(frontmatter) else {
+        return "unverified";
+    };
+    let events = match frontmatter.get("verified") {
+        Some(Value::Array(events)) => events.as_slice(),
+        Some(event @ Value::Object(_)) => std::slice::from_ref(event),
+        _ => &[],
+    };
+    let mut tier = "unverified";
+    for event in events {
+        let Some(actor) = event
+            .get("by")
+            .and_then(Value::as_str)
+            .filter(|a| valid_actor(a))
+        else {
+            continue;
+        };
+        let Some(at) = event_time(event) else {
+            continue;
+        };
+        if generated.is_some_and(|updated| at < updated) {
+            continue;
+        }
+        if actor.starts_with("human:") {
+            return "human-reviewed";
+        }
+        tier = "machine-confirmed";
+    }
+    tier
+}
+
 pub(crate) fn timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
     if !timestamp_shape(value) {
         return None;
@@ -371,6 +418,13 @@ pub(crate) fn diagnostics(frontmatter: &Map<String, Value>, path: &str) -> Vec<D
     }
     if let Some(generated) = frontmatter.get("generated") {
         check.event(generated, "/generated", false);
+        if frontmatter.contains_key("verified") && generated_time(frontmatter).is_err() {
+            check.warn(
+                "INDETERMINATE_VERIFICATION_TIME",
+                "/generated",
+                "cannot establish current verification events without a valid generated.at; trust is unverified",
+            );
+        }
     }
     if let Some(verified) = frontmatter.get("verified") {
         match verified {

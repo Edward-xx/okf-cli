@@ -16,6 +16,8 @@ Use `--type`, `--tag` and `--status` to filter search or queried context before 
 
 When the task requires review or expiry constraints, use `--trust human-reviewed` or `--expiry current`; trust choices are `unverified`, `machine-confirmed`, `human-reviewed`, and expiry choices are `current`, `expired`, `unspecified`, `unknown`. Repeat a field for alternatives; different fields combine with AND. `--as-of` accepts an RFC 3339 timestamp with an offset to reproduce lifecycle evaluation, including offline index queries. Preserve `data.evaluated_at`; it is distinct from the observation time and does not prove the source is current. Apply these constraints when relevant to the task rather than silently hiding all unreviewed or undated knowledge.
 
+Trust reflects complete verification events current relative to `generated.at`, not authenticated identity. An old human review cannot qualify updated content for `human-reviewed`; missing or invalid event times do not raise trust. If `generated` exists but its time is unusable, trust is `unverified`. `--as-of` changes expiry evaluation, not this event ordering.
+
 ## Indexed and offline workflows
 
 ```sh
