@@ -188,26 +188,6 @@ impl Document {
                     .collect()
             })
             .unwrap_or_default();
-        let events: Vec<&Value> = match self.frontmatter.get("verified") {
-            Some(Value::Array(a)) => a.iter().collect(),
-            Some(v @ Value::Object(_)) => vec![v],
-            _ => vec![],
-        };
-        let actors: Vec<&str> = events
-            .iter()
-            .filter_map(|v| v.get("by").and_then(Value::as_str))
-            .filter(|s| metadata::valid_actor(s))
-            .collect();
-        let trust = if actors
-            .iter()
-            .any(|a| a.starts_with("human:") && a.len() > 6)
-        {
-            "human-reviewed"
-        } else if actors.is_empty() {
-            "unverified"
-        } else {
-            "machine-confirmed"
-        };
         let expiry = match self.frontmatter.get("stale_after") {
             None => "unspecified",
             Some(v) => match v.as_str().and_then(metadata::timestamp) {
@@ -222,7 +202,7 @@ impl Document {
             title: text("title").unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).into()),
             description: text("description"),
             tags,
-            trust: trust.into(),
+            trust: metadata::trust_tier(&self.frontmatter).into(),
             status: text("status").unwrap_or_else(|| "stable".into()),
             expiry: expiry.into(),
         }
@@ -322,16 +302,12 @@ mod tests {
 
     #[test]
     fn invalid_expiry_is_unknown_not_current() {
-        let doc = Document::parse(
-            "---\ntype: Note\nstale_after: 2026-10-01\nverified: {by: 'human:dana'}\n---\n",
-        )
-        .unwrap();
+        let doc = Document::parse("---\ntype: Note\nstale_after: 2026-10-01\n---\n").unwrap();
         let now = DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let card = doc.card("note", now);
         assert_eq!(card.expiry, "unknown");
-        assert_eq!(card.trust, "human-reviewed");
     }
 
     #[test]

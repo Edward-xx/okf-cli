@@ -34,6 +34,7 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 | 维度 | 验证入口 | 可以证明的范围 |
 | --- | --- | --- |
 | 模型与应用行为 | Rust workspace 测试 | 解析、诊断、预算、排序、分页及故障回归 |
+| 审核时序 | `cargo test -p okf-core --test verification`、`cargo test -p okf-cli --test cli current_verification` | 时间边界、无效字段、混合事件，以及实时、索引、候选和离线筛选的一致性 |
 | 响应契约 | `scripts/check_schema.py`（包含 `check_search_schema.py`） | 元数据搜索、全文搜索与正文上下文的卡片、来源、索引版本和片段结构；覆盖空结果、部分结果、候选策略及多包，另核对实际片段的原文字节、哈希与 generation；包含隔离的合成反例，不代表每个业务字段均有完整 Schema |
 | 索引与目录范围 | `scripts/check_index.py`、`scripts/check_scope.py` | 完整性、修复、离线读取与目录范围隔离 |
 | 候选检索 | `scripts/evaluate_index_candidates.py` | 实际 CLI 与路径扫描结果对照、预算、损坏、兼容和重同步 |
@@ -296,6 +297,18 @@ Windows 使用 `target/release/okf.exe`。输出目录必须不存在。脚本�
 未完成模型运行和评分前，答案质量指标保持未测量；脚本准备成功或确定性检索通过均不构成模型效果结论。
 
 ## 最近验证
+
+### 2026-11-26：审核时序修复（#39）
+
+在 Windows 上验证基于 `bd9e5376de4505b3693fcb749e9683db9f6ef567` 的未提交修复。Debug、Release 全工作区 `--all-targets` 测试各 132 项通过，格式检查、Clippy（`-D warnings`）及 `git diff --check` 通过。
+
+从未修改 HEAD 单独构建旧版，在隔离知识库复现旧人工审核与缺失审核时间均返回 `human-reviewed`；再用新版 Release 二进制读取同一知识库与旧版创建的索引。20 种场景、69 次 CLI 调用覆盖时间边界、时区、无效字段、多事件、实时与离线筛选，响应均通过 JSON Schema。另用 3 次调用验证新增诊断及 `--max-warnings 0` 门槛。升级未重新同步，generation 与原文哈希保持不变。
+
+完整交付检查通过，包括 HTTPS Git、LFS 完整性、32 组生产候选对比、128 组预算测试、12 个消费回放任务、Agent 准备与打包验收；解压包通过 65 篇固定语料、184 次 CLI 调用。候选原型另通过 24 组检查。
+
+本地日志与 JSON 汇总位于 `target/verification/issue39/`，属于未入库的验证产物；长期回归入口见上表。此次证据不覆盖 Linux/macOS，也不代表完整 OKF v0.3 兼容或正式发行验收。
+
+同日文档同步与代码清理后，重新通过核心测试（23 项）、CLI 审核回归、Skill 安装测试（2 项）、Clippy、格式与差异检查；重建 Release 并逐字节核对内嵌 Skill 文件。此次增量验证未重复上述全量交付检查。
 
 ### 2026-11-03：冗余清理回归
 
