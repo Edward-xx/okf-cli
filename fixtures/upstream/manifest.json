@@ -80,6 +80,11 @@
         "source_path": "bundles/ga4/tables/index.md",
         "sha256": "d04cb9006bfa76d27393d025750eb0b825f75d4f046c408a425504c9f6133e06"
       }
+    ],
+    "spec": "SPEC.md",
+    "track": false,
+    "licenses": [
+      "LICENSE.md"
     ]
   },
   {
@@ -172,7 +177,18 @@
         "path": "skills/bundle/services/payments-api.md",
         "source_path": "examples/sample-bundle/services/payments-api.md",
         "sha256": "9c109fc04ee0facf4620d6e958fa206efa9ca1cfd89c84904b70905c5f455a10"
+      },
+      {
+        "path": "skills/skills/okf/reference/SPEC.md",
+        "source_path": "skills/okf/reference/SPEC.md",
+        "sha256": "1bc532f0b1baa5d021af97c9ce3205c26c6c402076f1eaa2e37a0abdd8de43c3"
       }
+    ],
+    "spec": "skills/okf/reference/SPEC.md",
+    "track": true,
+    "licenses": [
+      "LICENSE",
+      "NOTICE"
     ]
   },
   {
@@ -370,6 +386,125 @@
         "path": "ruby/NOTICE",
         "source_path": "NOTICE",
         "sha256": "c6f28048c8197954d1bc9414635893cc1f6ee6bde924c2128f1fc99c79f7e42a"
+      },
+      {
+        "path": "ruby/gems/okf/lib/okf/skill/reference/SPEC.md",
+        "source_path": "gems/okf/lib/okf/skill/reference/SPEC.md",
+        "sha256": "b5ab11f92fc78d1a5c2cd77980e6cc203638907a232ea3855f906a3d4c4555ca"
+      }
+    ],
+    "spec": "gems/okf/lib/okf/skill/reference/SPEC.md",
+    "track": true,
+    "licenses": [
+      "LICENSE.txt",
+      "NOTICE"
+    ]
+  },
+  {
+    "name": "official",
+    "repository": "https://github.com/open-knowledge-format/open-knowledge-format",
+    "commit": "527e81aff55992be21507e97004286789126f88c",
+    "bundle": "bundles/acme_retail",
+    "spec": "SPEC.md",
+    "track": true,
+    "licenses": [
+      "LICENSE.md"
+    ],
+    "files": [
+      {
+        "path": "official/LICENSE.md",
+        "source_path": "LICENSE.md",
+        "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+      },
+      {
+        "path": "official/SPEC.md",
+        "source_path": "SPEC.md",
+        "sha256": "a1fcc51be23fce5c1e4e198f0a71af6046a5286503959caa4009311f74fac3f1"
+      },
+      {
+        "path": "official/bundle/attesters/index.md",
+        "source_path": "bundles/acme_retail/attesters/index.md",
+        "sha256": "f0cfe692f3026cad2b123a4240eb762109ed205edd13d937ffa4446ca700af5e"
+      },
+      {
+        "path": "official/bundle/computations/gross-margin-period.md",
+        "source_path": "bundles/acme_retail/computations/gross-margin-period.md",
+        "sha256": "4f8994cc02260b994721cf21428db704ab00cb356dc2a82b8241fe4895cd7ae9"
+      },
+      {
+        "path": "official/bundle/computations/index.md",
+        "source_path": "bundles/acme_retail/computations/index.md",
+        "sha256": "35a5fd6695d62d793d0f1ec430f11b82f6845e04e950a4df29e98a0771bdc609"
+      },
+      {
+        "path": "official/bundle/computations/revenue-ytd.md",
+        "source_path": "bundles/acme_retail/computations/revenue-ytd.md",
+        "sha256": "453e25fef357f00f9e1aec1d159ad97216b4df888927552b17582c6c3929a370"
+      },
+      {
+        "path": "official/bundle/index.md",
+        "source_path": "bundles/acme_retail/index.md",
+        "sha256": "11d2160a19c87dec096aa1c385c3b1afef9e93614cd8f7e4f159a96263101117"
+      },
+      {
+        "path": "official/bundle/log.md",
+        "source_path": "bundles/acme_retail/log.md",
+        "sha256": "bdf7f36114884336562c9e1b970bb8c16df193d77f0ea4754274e12d156086b9"
+      },
+      {
+        "path": "official/bundle/metrics/gross-margin-legacy.md",
+        "source_path": "bundles/acme_retail/metrics/gross-margin-legacy.md",
+        "sha256": "eb470efe25cdda32641565830d180fb6653231f60340176ae42ed246ab2f146b"
+      },
+      {
+        "path": "official/bundle/metrics/gross-margin.md",
+        "source_path": "bundles/acme_retail/metrics/gross-margin.md",
+        "sha256": "6d4554f2666ca1f00fb07d9a94188e32dbd6317d1342214f3b673a9f1bf16c8c"
+      },
+      {
+        "path": "official/bundle/metrics/index.md",
+        "source_path": "bundles/acme_retail/metrics/index.md",
+        "sha256": "2c8c23b90486c642b21b5d427cb64275d5804e1634fbfd74a18084844f854959"
+      },
+      {
+        "path": "official/bundle/metrics/revenue.md",
+        "source_path": "bundles/acme_retail/metrics/revenue.md",
+        "sha256": "067c1c0f8236a9872b3045413de11ba119759a1c43f562c1c9825aa7189af807"
+      },
+      {
+        "path": "official/bundle/policies/index.md",
+        "source_path": "bundles/acme_retail/policies/index.md",
+        "sha256": "6b99c48d9f8d45e6ec4036cc30c66079f96f82579baee3067b72e52ced818949"
+      },
+      {
+        "path": "official/bundle/policies/margin-standard.md",
+        "source_path": "bundles/acme_retail/policies/margin-standard.md",
+        "sha256": "fad81a5eabc286913a4d9436c2d36d31bcfb1494659c4110900ec2569bc6e42c"
+      },
+      {
+        "path": "official/bundle/policies/revenue-recognition.md",
+        "source_path": "bundles/acme_retail/policies/revenue-recognition.md",
+        "sha256": "7660f72336e41c8af22a5910934d4903e502c9e2c1248409249e5dc5393107f3"
+      },
+      {
+        "path": "official/bundle/skills/index.md",
+        "source_path": "bundles/acme_retail/skills/index.md",
+        "sha256": "cd753f631320876fcca592823c32f55813419d00b4a14acf807d75aa8a0855fd"
+      },
+      {
+        "path": "official/bundle/skills/run-on-bq.md",
+        "source_path": "bundles/acme_retail/skills/run-on-bq.md",
+        "sha256": "99884fa5cff33a9c0d87d5a9a1364e17eef38444a5037eb0e1ad2b25c937c371"
+      },
+      {
+        "path": "official/bundle/tables/index.md",
+        "source_path": "bundles/acme_retail/tables/index.md",
+        "sha256": "f0a8344e59cc7e4e05addd2fc1793fb817369a1f043fd45b59935b08b1c7acb0"
+      },
+      {
+        "path": "official/bundle/tables/orders.md",
+        "source_path": "bundles/acme_retail/tables/orders.md",
+        "sha256": "22e281e4249569447bc00eafd5cd2d0921a5c81b842f8f1c44447d33ec7b6b84"
       }
     ]
   }

@@ -1,6 +1,6 @@
 # okf-cli
 
-面向 Agent 的 [Open Knowledge Format（OKF）](https://github.com/GoogleCloudPlatform/open-knowledge-format) 知识消费 CLI。通过概览、目录、检索和原文读取，逐步获取任务所需的知识。
+面向 Agent 的 [Open Knowledge Format（OKF）](https://github.com/open-knowledge-format/open-knowledge-format) 知识消费 CLI。通过概览、目录、检索和原文读取，逐步获取任务所需的知识。
 
 - 只读访问本地目录或固定提交的 Git 知识包。
 - 支持元数据检索、同步后的正文检索与离线读取，以及 OKF 格式校验。
@@ -55,7 +55,7 @@ Skill 入口提供基本流程，详细命令参考按场景加载。安装同�
 | --- | --- |
 | [设计与实现](docs/architecture.md) | 架构、实现边界和后续计划 |
 | [CLI 使用与校验参考](docs/cli-contract.md) | 命令、参数、响应及 OKF 检查规则 |
-| [验证与评测](docs/verification.md) | 开发检查、测试入口、评测与验证记录 |
+| [验证与评测](docs/verification.md) | 开发检查、上游监测、评测与验证记录 |
 | [安装与发行](docs/releases.md) | 构建、安装、升级和发布流程 |
 | [变更记录](CHANGELOG.md) | 各版本变化 |
 
