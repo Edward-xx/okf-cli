@@ -1,11 +1,10 @@
-"""Regression checks for delivery gates, upstream changes and candidate budgets."""
+"""Regression checks for delivery gates and candidate budgets."""
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
 from check_runtime import inspect, pe_imports
-from check_upstream import compare, inventory
 from evaluate_candidates import query
 
 
@@ -37,19 +36,6 @@ class SupportChecks(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         query(Path('unused.sqlite'), text, limit, work_limit)
                     connect.assert_not_called()
-
-    def test_upstream_changes_preserve_additions_removals_and_edits(self):
-        self.assertEqual(compare({'old':'a','edited':'b','same':'c'}, {'new':'a','edited':'d','same':'c'}),
-                         {'added':['new'],'removed':['old'],'changed':['edited']})
-
-    def test_upstream_requires_complete_tree_and_expected_paths(self):
-        for tree in ({'truncated':True}, {'tree':[]},
-                     {'tree':[{'type':'blob','path':'SPEC.md','sha':'a'}]}):
-            with self.assertRaises(ValueError):
-                inventory(tree,'bundle','SPEC.md')
-        result = inventory({'tree':[{'type':'blob','path':p,'sha':'a'} for p in
-                                    ('SPEC.md','bundle/note.md','bundle-extra/note.md','code.py')]},'bundle','SPEC.md')
-        self.assertEqual(set(result), {'SPEC.md','bundle/note.md'})
 
     def test_linux_accepts_baseline_and_records_libraries(self):
         with patch('check_runtime.subprocess.check_output',side_effect=[

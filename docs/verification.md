@@ -47,7 +47,7 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 | Git 传输与缓存 | `scripts/check_git_https.py`、`scripts/check_git_integrity.py` | 本地真实 HTTPS 传输、凭据隔离、失败恢复、子模块和 LFS 完整性 |
 | 检索与消费 | `scripts/evaluate.py`、`evaluate_multi_bundle.py`、`evaluate_budgets.py`、`evaluate_consumption.py` | 固定任务证据、覆盖和调用轨迹；不测量模型答案质量 |
 | Agent 评测准备 | `scripts/check_agent_preparation.py` | 隔离项目、盲测任务和拒绝覆盖；不调用模型 |
-| 上游与发行 | `scripts/check_upstream.py`、`check_package.py`、`verify_package.py` | 固定语料、打包拒绝条件、解压包独立运行及语料验收 |
+| 上游与发行 | `scripts/check_upstream.py`、`check_upstream_tests.py`、`check_package.py`、`verify_package.py` | 固定语料、监测与下载回归、打包拒绝条件、解压包独立运行及语料验收 |
 
 表中 Python 入口由 [交付脚本](../scripts/check_delivery.py) 组织。性能与大规模检索是另行执行的测量，见 [性能基线](#性能基线与兼容语料) 和 [检索评测](#检索任务评测)；在线上游差异检查见 [兼容检查](#上游兼容检查)，不属于默认离线验收。
 
@@ -112,41 +112,57 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 ```sh
 git -C /path/to/open-knowledge-format checkout --detach <commit-sha>
 python scripts/check_official_corpus.py target/release/okf /path/to/open-knowledge-format target/verification/official-fs --as-of 2026-10-28T00:00:00Z
-python scripts/check_official_corpus.py target/release/okf /path/to/open-knowledge-format target/verification/official-git --git-url https://github.com/GoogleCloudPlatform/open-knowledge-format.git --ref <commit-sha> --bundles ga4
+python scripts/check_official_corpus.py target/release/okf /path/to/open-knowledge-format target/verification/official-git --git-url https://github.com/open-knowledge-format/open-knowledge-format.git --ref <commit-sha> --bundles ga4
 ```
 
 Windows 使用 `target/release/okf.exe`。本地目录模式复制语料到临时工作区；Git 模式会访问指定远端，要求解析后的提交与 checkout HEAD 一致，并模拟刷新失败和 Git 不可用。只在临时副本中操作，结束时核对源语料哈希。
 
 `--as-of` 默认固定为 `2026-10-28T00:00:00Z`，用于可复现的时效性判定；`--timeout-ms` 指定普通 CLI 调用预算，Git 注册、刷新和故障模拟使用各自的固定预算。报告记录二进制哈希、语料哈希和上游提交。输出目录创建后，执行异常也会写入 `report.json` 并返回非零状态；`trace.jsonl` 保存已尝试的 CLI 调用、原始输出和解析结果，超时保留可获取的部分输出。参数解析或输出目录创建失败发生在报告初始化前，不生成报告。
 
+Git 模式从指定提交的 Git blob 读取预期 Markdown 字节，不使用 checkout 经 `core.autocrlf` 等过滤后的文件字节；各包的 `expected_document_hashes` 记录实际用于比对的哈希。文件系统模式仍以工作区文件原字节为准。两种模式都检查源 checkout 未被测试修改。
+
 完整语料验收手动执行，不依赖公网的失败处理回归通过 `python scripts/check_official_corpus_runner.py` 运行，并纳入 CI。
 
 ### 固定基线与上游差异
 
-`fixtures/upstream/manifest.json` 固定三个参考项目的提交、源文件路径和 SHA-256；规范判定依据见 [检查矩阵](cli-contract.md#okf-检查矩阵)。常规交付验收仅检查本地固定语料，网络变化不会改变测试输入。
+`fixtures/upstream/manifest.json` 是下载与检查共用的来源配置，记录仓库、不可变提交、规范路径、样例目录、许可证和文件 SHA-256。`google` 保留旧提交作为历史回归快照（`track: false`），不再检查旧仓库 HEAD。`official` 跟踪新官方仓库，初始固定提交与 [兼容矩阵](cli-contract.md#版本兼容矩阵) 一致：`527e81aff55992be21507e97004286789126f88c`，保存 v0.3 `SPEC.md`、Acme Retail 的 17 份 Markdown 和许可证。`skills`、`ruby` 继续监测，并保存各自固定版本的规范。常规交付仅验证本地哈希；在线监测不会修改基线。
 
 ```sh
 python scripts/check_upstream.py target/verification/upstream-local.json
 python scripts/check_upstream.py target/verification/upstream.json --online
 ```
 
-在线模式先将上游 HEAD 解析为具体提交，再对比两个不可变 tree。报告分别列出规范及样例的新增、删除、内容变化与规范变化标记。缺失规范、样例目录或不完整 tree 会失败，不能当作“无变化”。脚本不下载替换文件，也不修改固定基线。GitHub 的 `Upstream compatibility report` 工作流仅手动运行，上传同一报告。
+| 状态 | 含义 | 退出码 |
+| --- | --- | --- |
+| `local_verified` | 本地快照哈希正确，未检查远端 | 0 |
+| `unchanged` | 所配置范围内没有变化，不是兼容性认证 | 0 |
+| `review_required` | 规范、样例或预期布局变化，等待人工审查 | 2 |
+| `check_failed` | 网络、树截断、数据或本地完整性错误，检查未完整完成 | 1 |
+
+每个来源独立报告；汇总优先级为检查失败、待审查、无变化、本地验证。历史快照的跳过不会覆盖其他来源的检查状态。报告包含 JSON 与同名 Markdown，列出固定提交、解析一次后的 HEAD、比较链接、规范变化、样例增删改及变化前后的 Git blob 哈希。完整 tree 中缺失规范或整个样例目录属于布局待审查；树截断不能据此判断布局或无变化，属于检查失败。网络失败保留其他来源已完成的结果。
+
+输出路径必须使用 `.json` 扩展名，避免摘要覆盖 JSON。活跃来源的本地 manifest 必须同时列出规范及代表性样例；缺项、重复源路径、异常 tree 结构或 HTTP 响应中断均明确报告失败。
+
+监测范围是配置中的规范文件及一个代表性样例目录下的 Markdown；不宣称覆盖所有上游样例、非 Markdown 资产或自动证明格式兼容。目录内部文件移动表现为新增与删除。下载器另行保存许可证，监测不执行上游代码。
+
+GitHub 的 `Upstream compatibility report` 每周一 03:23 UTC 定时执行，也可手动触发。待审查和检查失败均令独立监测任务失败，以工作流失败状态告警；摘要及 JSON/Markdown 差异产物在失败时仍尝试上传。该联网任务不是普通 PR 的离线兼容门槛。API 支持 `GH_TOKEN`，工作流只授予 `contents: read`。
 
 发现差异后，按以下顺序处理：
 
-1. 根据固定规范与新规范，区分格式要求变化、样例变化和工具策略变化。
-2. 将影响消费行为的有效、无效和未知扩展字段案例加入回归；保留原文字节、字段定位和来源提交。
-3. 在独立修改中更新 manifest、语料和检查矩阵，注明接受或保留差异的原因，执行完整交付验收。
+1. 查看报告的比较链接、规范变化、样例变化及布局缺失；网络或截断错误先恢复完整检查。区分格式要求、样例内容与工具策略，记录接受或保留差异的理由。
+2. 将影响消费行为的有效、无效及未知扩展案例加入回归；运行相关 CLI 兼容测试。无语义影响的变化也需要明确审查记录。
+3. 人工确认完整提交后执行 `python scripts/fetch-fixtures.py --source official --commit <40位提交SHA>`。下载器不解析 HEAD；省略 `--commit` 只重新下载该来源当前固定提交。它校验 Git blob 哈希，全部下载成功后才写入文件和 manifest。旧 `google` 快照禁止推进提交。
+4. 检查 PR 中的 manifest、规范及样例差异，并人工删除新 manifest 已不引用的过时文件。同步更新 [版本兼容矩阵](cli-contract.md#版本兼容矩阵)、架构规范链接和验证记录；执行相关回归及交付验收后再合入。下载基线本身不表示兼容审查完成。
 
-报告的 `review_required` 仅表示需要分析，不代表本项目不兼容。`check_support.py` 覆盖新增、删除、修改、不完整 tree 和缺失规范的分类与拒绝行为。历史在线核对结果见 [验证记录](verification.md#最近验证)。
+`python scripts/check_upstream_tests.py` 集中覆盖迁移、规范与样例变化、布局缺失、树截断、网络失败、部分结果保留、本地损坏、退出码和报告生成；该离线入口也纳入交付检查。执行结果见 [验证记录](#最近验证)。
 
 ## 性能基线与兼容语料
 
 本节保存历史测量及复现方法。`baseline-windows.json` 未记录源码提交和完整环境信息，不作为当前源码的性能回归结论；当前候选实现的成本需要重新测量。验证范围见 [验证记录](#最近验证)。
 
-`fixtures/upstream/manifest.json` 固定三个上游仓库的 commit、源路径与 SHA-256。共 65 份 Markdown，其中 44 份普通概念，另有目录索引等保留文件。原始许可与 NOTICE 随语料保留，`.gitattributes` 禁止 Git 改写其换行。
+历史性能基线使用 `google`、`skills`、`ruby` 三组固定语料（manifest 另含新官方监测语料与规范快照）。这三组样例共 65 份 Markdown，其中 44 份普通概念，另有目录索引等保留文件。原始许可与 NOTICE 随语料保留，`.gitattributes` 禁止 Git 改写其换行。
 
-运行 `cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upstream` 可得到 JSON 基线。若有意更新语料，运行 `python scripts/fetch-fixtures.py`；该脚本使用显式固定的提交，普通测试不联网。
+运行 `cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upstream` 可得到 JSON 基线。若有意更新语料，运行 `python scripts/fetch-fixtures.py --source <来源名>`；该脚本使用显式固定的提交，普通测试不联网。
 
 基线分别使用空观测缓存、预热观测缓存、已同步正文索引。每次实时查询从三个包读取 44 份文件、139099 字节，列举 19 个目录。正文索引查询不读取知识包文件，但仍读取 SQLite；指标中的 `file_reads` 和 `read_bytes` 只统计知识包适配器 I/O。
 
@@ -303,6 +319,20 @@ Windows 使用 `target/release/okf.exe`。输出目录必须不存在。脚本�
 未完成模型运行和评分前，答案质量指标保持未测量；脚本准备成功或确定性检索通过均不构成模型效果结论。
 
 ## 最近验证
+
+### 2026-11-27：上游监测全面验证与实测（#41）
+
+环境为 Windows GNU、Rust 1.99.1、Python 3.13。检查中补齐了异常 tree 响应、HTTP 响应中断、manifest 缺少规范或样例、重复源路径，以及 `.md` 输出覆盖 JSON 的失败处理；相关监测回归在普通和优化 Python 模式下均通过。官方语料运行器另修复 Git 模式错误使用 CRLF checkout 字节作为预期的问题，6 项回归通过，包括真实 Git 提交与变更工作区隔离。
+
+Debug、Release 各 146 项 Rust 测试、fmt、严格 Clippy 及新 Release 构建通过。首次整套交付在本地 HTTPS Git 的 30 秒外层进程超时处中断；相同 HTTPS 检查单独复测通过，未放宽原测试时限。其余交付步骤按原脚本顺序续跑通过，含 45 个响应 Schema、70 项 v0.3 检查（68 次 CLI 调用）、索引与目录范围、候选检索、Git 完整性、检索评测、128 项预算场景、消费回放和 Agent 准备。解压包独立验收通过，四组语料共 82 份文档、221 次 CLI 调用，涵盖新官方样例的实时及离线读取。
+
+隔离目录中的实际监测子进程验证了 `local_verified/0`、`unchanged/0`、`review_required/2`、`check_failed/1`；真实联网检查显示新官方监测范围无变化，`skills` 和 `ruby` 待审查。关闭的本地代理及损坏快照均正确生成失败报告。官方基线重新下载后全部文件与 manifest 字节一致；19 个官方固定文件与独立 Git clone 中对应提交的原始 blob 逐字节一致。工作流配置及原始 Bash 摘要步骤在待审查、网络失败、报告缺失三种场景通过本地验证，未在 GitHub 实际触发定时工作流或验证远端 artifact 上传。
+
+新官方固定提交 `527e81aff55992be21507e97004286789126f88c` 的文件系统模式实测通过：78 份文档、225 项检查、429 次 CLI 调用。Git 模式首轮的哈希误报源于上述 CRLF 验收脚本问题；原始轨迹中 37 次读取哈希重新与固定提交核对，全部正确。修复后的真实 HTTPS Git 复测通过：Acme Retail 的 17 份文档、56 项检查、81 次 CLI 调用，含分页、同步、断网刷新失败后的缓存读取，以及移除 Git 与对象库后的离线索引读取。
+
+日志与 JSON/JSONL 证据位于 `target/verification/issue41/full/`、`actual/`、`official-fs/`、`official-git/`、`official-git-fixed/` 和 `https-retry/`，汇总为 `target/verification/issue41/summary.json`。这些为本地生成产物；不替代 Linux/macOS、Windows MSVC 或 GitHub 托管工作流的验收。
+
+同日清理后，下载器复用监测的 GitHub JSON 请求函数，移除单来源循环与重复初始化；两项原支持测试迁入上游专项。当前上游专项 15 项、支持测试 6 项、官方运行器 6 项通过，上游专项另通过优化 Python 模式。真实联网、断网、快照损坏及下载字节一致性复测通过，148 个本地文档链接与锚点检查通过。增量证据位于 `target/verification/issue41/cleanup/`；此次未重复完整 Rust 与交付套件。
 
 ### 2026-11-27：OKF v0.3 兼容
 

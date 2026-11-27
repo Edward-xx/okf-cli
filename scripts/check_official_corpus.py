@@ -25,6 +25,27 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def git_documents(git, checkout, commit, bundle):
+    """Use committed bytes; checkout filters such as autocrlf are not Git content."""
+    prefix = f'bundles/{bundle}/'
+    listing = subprocess.check_output([git, '-C', str(checkout), 'ls-tree', '-r', '-z',
+                                       commit, '--', prefix])
+    documents = {}
+    for entry in listing.split(b'\0'):
+        if not entry:
+            continue
+        metadata, raw_path = entry.split(b'\t', 1)
+        mode, kind, oid = metadata.split()
+        path = raw_path.decode('utf-8')
+        if mode not in (b'100644', b'100755') or kind != b'blob' or not path.endswith('.md'):
+            continue
+        require(path.startswith(prefix), 'Git document outside selected bundle')
+        documents[path[len(prefix):]] = subprocess.check_output(
+            [git, '-C', str(checkout), 'cat-file', 'blob', oid.decode('ascii')])
+    require(documents, f'{bundle}: no committed Markdown documents')
+    return documents
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=Path)
@@ -45,7 +66,7 @@ def main():
         parser.error('--as-of must be an RFC 3339 timestamp with a timezone')
     binary, checkout, output = (p.resolve() for p in (args.binary, args.checkout, args.output))
     output.mkdir(parents=True, exist_ok=False)
-    report = {'repository': args.git_url or 'https://github.com/GoogleCloudPlatform/open-knowledge-format',
+    report = {'repository': args.git_url or 'https://github.com/open-knowledge-format/open-knowledge-format',
               'bundles': [], 'checks': [], 'calls': 0, 'as_of': args.as_of,
               'model_evaluation': False, 'source_mode': 'git-https' if args.git_url else 'fs',
               'git_url': args.git_url, 'git_ref': args.ref if args.git_url else None,
@@ -158,8 +179,10 @@ def main():
                 source = sources[name]
                 bundle = workspace / name
                 shutil.copytree(source, bundle)
-                documents = {p.relative_to(bundle).as_posix(): p.read_bytes() for p in bundle.rglob('*.md')}
-                row = {'name': name, 'documents': len(documents)}
+                documents = (git_documents(git, checkout, commit, name) if args.git_url else
+                             {p.relative_to(bundle).as_posix(): p.read_bytes() for p in bundle.rglob('*.md')})
+                row = {'name': name, 'documents': len(documents),
+                       'expected_document_hashes': {path: sha(raw) for path, raw in documents.items()}}
                 report['bundles'].append(row)
                 if args.git_url:
                     registered = run('bundle', 'add', name, '--kind', 'git', '--url', args.git_url,

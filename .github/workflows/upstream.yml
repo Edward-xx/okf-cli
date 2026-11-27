@@ -1,18 +1,35 @@
 name: Upstream compatibility report
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1'
 permissions:
   contents: read
 jobs:
   compare:
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - run: python scripts/check_upstream_tests.py
       - run: python scripts/check_upstream.py target/verification/upstream.json --online
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Publish monitoring summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target/verification/upstream.md ]; then
+            cat target/verification/upstream.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Upstream check failed before a report was produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: upstream-compatibility
-          path: target/verification/upstream.json
+          path: target/verification/upstream.*
+          if-no-files-found: error

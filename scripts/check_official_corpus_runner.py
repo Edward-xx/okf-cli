@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,28 @@ import check_official_corpus as runner
 
 
 class CorpusRunnerChecks(unittest.TestCase):
+    def test_git_expectations_ignore_crlf_filters_and_worktree_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            git = os.environ.get('OKF_GIT', 'git')
+            def command(*args):
+                return subprocess.check_output([git, '-C', str(checkout), '-c', 'core.autocrlf=false',
+                                                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                                                '-c', 'commit.gpgsign=false', *args], stderr=subprocess.PIPE)
+            command('init')
+            bundle = checkout / 'bundles/ga4'
+            bundle.mkdir(parents=True)
+            original = b'---\ntype: Note\n---\nOriginal\n'
+            (bundle / 'index.md').write_bytes(original)
+            command('add', '.')
+            command('commit', '-m', 'fixed corpus')
+            commit = command('rev-parse', 'HEAD').decode().strip()
+            for changed in (original.replace(b'\n', b'\r\n'), b'edited worktree'):
+                (bundle / 'index.md').write_bytes(changed)
+                (bundle / 'untracked.md').write_bytes(b'untracked')
+                self.assertEqual(runner.git_documents(git, checkout, commit, 'ga4'), {'index.md': original})
+                self.assertEqual((bundle / 'index.md').read_bytes(), changed)
+
     def run_case(self, bundles, extra=(), result=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -1,4 +1,8 @@
 # Upstream fixture hashes refer to original bytes, including line endings.
 fixtures/upstream/** -text
+# Preserve upstream Markdown whitespace as part of the hashed original bytes.
+fixtures/upstream/**/*.md whitespace=-blank-at-eol,-blank-at-eof
+# The existing manifest uses CRLF; retain its format when refreshing one source.
+fixtures/upstream/manifest.json whitespace=cr-at-eol
 # Embedded instructions must have identical bytes on every release platform.
 skills/** text eol=lf
