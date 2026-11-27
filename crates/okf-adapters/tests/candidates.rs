@@ -21,6 +21,7 @@ fn snapshot(entries: &[(&str, &str)]) -> Snapshot {
         })
         .collect();
     Snapshot {
+        directories: Some(vec![]),
         generation: index_generation(
             None,
             documents.iter().map(|d| (d.path.as_str(), d.hash.as_str())),
@@ -162,7 +163,7 @@ fn candidate_failure_rolls_back_original_and_derived_publication() {
     let index = SqliteIndex::open(&path).unwrap();
     let data = snapshot(&[("a.md", "---\ntype: Note\n---\nneedle")]);
     index.publish("book", None, &data).unwrap();
-    let invalid = snapshot(&[("a.md", "missing frontmatter")]);
+    let invalid = snapshot(&[("a.md", "---\ntype: [\n---\n")]);
     assert!(index
         .publish("book", Some(&data.generation), &invalid)
         .is_err());

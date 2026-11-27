@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
+mod compatibility;
 mod computation;
+pub use compatibility::{
+    classify, excluded_path, has_frontmatter, items, not_concept, path_fields, present,
+    resolve_path_field, BundleMetadata,
+};
 pub mod markdown;
 mod metadata;
 pub mod sections;
@@ -171,14 +176,14 @@ impl Document {
     }
 
     pub fn card(&self, id: &str, now: DateTime<Utc>) -> Card {
+        let normalized = compatibility::normalized(&self.frontmatter);
         let text = |key: &str| {
-            self.frontmatter
+            normalized
                 .get(key)
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         };
-        let tags = self
-            .frontmatter
+        let tags = normalized
             .get("tags")
             .and_then(Value::as_array)
             .map(|a| {
@@ -188,7 +193,7 @@ impl Document {
                     .collect()
             })
             .unwrap_or_default();
-        let expiry = match self.frontmatter.get("stale_after") {
+        let expiry = match normalized.get("stale_after") {
             None => "unspecified",
             Some(v) => match v.as_str().and_then(metadata::timestamp) {
                 Some(t) if now >= t.with_timezone(&Utc) => "expired",
@@ -202,8 +207,15 @@ impl Document {
             title: text("title").unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).into()),
             description: text("description"),
             tags,
-            trust: metadata::trust_tier(&self.frontmatter).into(),
-            status: text("status").unwrap_or_else(|| "stable".into()),
+            trust: metadata::trust_tier(&normalized).into(),
+            status: normalized
+                .get("status")
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "stable".into()),
             expiry: expiry.into(),
         }
     }
@@ -302,7 +314,7 @@ mod tests {
 
     #[test]
     fn invalid_expiry_is_unknown_not_current() {
-        let doc = Document::parse("---\ntype: Note\nstale_after: 2026-10-01\n---\n").unwrap();
+        let doc = Document::parse("---\ntype: Note\nstale_after: not-a-date\n---\n").unwrap();
         let now = DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);

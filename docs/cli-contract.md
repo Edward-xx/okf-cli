@@ -114,11 +114,13 @@
 
 ## 关系导航与扩展检查
 
-`neighbors` 需要先执行 `sync`，离线工作并返回 generation。它只提取 Markdown 概念链接与 `sources[].resource` 中的包内 `.md` 引用；正文相对路径以文档目录为基准，来源资源相对路径按包根解析。外部 URI、目录、附件和图片不构成概念边；不根据文字相似性推断关系。
+`neighbors` 需要先执行 `sync`，离线工作并返回 generation。它提取正文链接和标准路径字段：`resource`、`sources[].resource`、`computation`、`executor.resource`、`attester.resource`、有效的 `superseded_by`。仅当源和目标均为实际概念时返回图边；缺失或非概念目标通过诊断报告。正文与路径字段均从所属文件目录解析；旧版路径字段的受控回退见兼容矩阵。外部 URI、目录、附件和图片不构成概念边；不根据文字相似性推断关系。
 
-`--direction outgoing` 只解析目标文档，`incoming` 和 `both` 按索引文档顺序扫描全包；加载阶段仍读取有界完整快照，因此 `--max-scan` 不限制加载快照的总内存。相同两份文档间的不同引用保留为独立证据，不进行传递关系推导或关系去重。
+`--direction outgoing` 只提取目标文档的直接引用，`incoming` 和 `both` 按索引文档顺序扫描全包；加载阶段读取有界完整快照并分类 Markdown，因此 `--max-scan` 不限制加载快照的总内存。替代链另在同一快照内按独立扫描上限诊断。相同两份文档间的不同引用保留为独立证据，不进行传递关系推导或关系去重。
 
-每个结果包含 `from`、`to`、方向、目标是否存在，以及证据文件哈希和正文 `location` 或元数据 `field`。缺失目标仍保留，循环关系只报告直接边。`--limit`、`--budget-bytes`、`--max-scan`、`--timeout-ms` 默认值与搜索一致；扫描预算计索引文档数，单文档正文链接与来源各最多 256 条。`relationship_check.complete` 描述关系扫描，结果选择不足另报 `RESULT_LIMIT`；扫描或引用截断时不能把没有入链解释成全包没有引用。
+每个结果包含 `from`、`to`、方向、目标存在标识，以及证据文件哈希和正文 `location` 或元数据 `field`。缺失或非概念目标以 `NON_CONCEPT_TARGET`（替代字段使用 `INVALID_SUPERSESSION_TARGET`）诊断，不作为概念边返回；循环关系仍保留直接边。`--limit`、`--budget-bytes`、`--max-scan`、`--timeout-ms` 默认值与搜索一致；扫描预算计索引文档数，单文档正文链接与来源各最多 256 条。`relationship_check.complete` 描述关系及替代链检查是否完成，结果选择不足另报 `RESULT_LIMIT`；扫描或引用截断时不能把没有入链解释成全包没有引用。
+
+`superseded_by` 仅在 `status: deprecated` 时参与导航，原概念及来源引用保持不变。`neighbors` 为有效替代目标提供 `next`，缺失或非概念目标产生 `INVALID_SUPERSESSION_TARGET`；请求概念的替代链遇到循环产生 `SUPERSESSION_CYCLE`。替代链单独受 `--max-scan` 限制，覆盖见 `supersession_check`。图边来源扫描与整份索引分类计数分别披露在预算中。不会自动替换搜索结果或把旧证据当成新证据。
 
 `validate --attachments` 用元信息查询检查非 Markdown 正文链接与图片引用的存在性和文件类型，不读取附件内容。结果独立返回 `attachment_check`，其中 `images_included` 恒为 `true`、`images_checked` 统计图片引用数量，`types` 列出检查到的附件目标的小写扩展名（去重、升序，图片与普通附件一并计入）；与正文链接共用数量和字符串预算。
 
@@ -196,7 +198,7 @@ fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象�
 
 候选行预算计倒排路径、回退路径和卡片元数据读取，分别返回 `budget.candidate_rows_limit`、`candidate_rows_read`；正文仍受 `--max-scan` 限制。各包按名字顺序平均分配候选预算，余数依次分配，不在查询后重新分配。数据库清单计数、B-tree 查找和哈希计算不属于行预算，不能据此承诺总 I/O 或 CPU 上限。任何候选或正文截断返回 `CANDIDATE_LIMIT`、退出码 7 与未知总数；恰好读满候选预算时保守报告不完整。完整覆盖表示所选范围内查询候选已穷尽，不表示读取了每份正文。
 
-派生数据当前使用独立版本 2（字段值检索），正文数据库仍为 v1，响应策略标识仍为 `candidates-v1`。升级前生成的版本 1 候选数据需要重新 `sync`；普通路径查询和索引原文读取不受影响。旧库可继续路径查询与原文读取，候选数据缺失返回 `INDEX_CANDIDATES_MISSING`（3），重新同步可建立。正文或派生表被发布事务之外的 SQL 写入时使候选清单失效；失效、版本或计数不符返回 `INDEX_CANDIDATES_CORRUPT`（5），包括范围外写入造成的全包失效。旧程序写入后也应重新同步。该机制检测一致性问题，不是对恶意数据库修改的身份认证。
+正文数据库使用 v2，记录概念分类；候选派生数据使用版本 3，响应策略标识仍为 `candidates-v1`。升级后应对每个知识包执行 `sync`：写入入口迁移旧 v1 数据库，并重新生成候选数据；直接用只读入口打开 v1 库返回 `INDEX_VERSION`，提示同步。候选数据缺失返回 `INDEX_CANDIDATES_MISSING`（3），重新同步可建立。正文或派生表被发布事务之外的 SQL 写入时使候选清单失效；失效、版本或计数不符返回 `INDEX_CANDIDATES_CORRUPT`（5），包括范围外写入造成的全包失效。旧程序写入后也应重新同步。该机制检测一致性问题，不是对恶意数据库修改的身份认证。
 
 多包候选查询发生读取错误时，故障包列入 `coverage_gaps.unavailable_bundles`。行数统计仅包含成功返回计量的包，是整个请求实际消耗的下界；预先分配的独立配额仍限制所有包的合计读取上限。
 
@@ -305,7 +307,24 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 ## OKF 检查矩阵
 
-本节定义结构检查、元数据与正文诊断，基线为固定提交的 [OKF v0.2 规范](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md)；审核时序采用 v0.3 §5.2–5.3，见 [派生与覆盖](#派生与覆盖)。命令与响应规则见前文的 [命令](#命令) 和 [JSON 响应](#json-响应)。
+本节定义结构检查、元数据与正文诊断，消费规则以固定提交的 [OKF v0.3 规范](https://github.com/open-knowledge-format/open-knowledge-format/blob/527e81aff55992be21507e97004286789126f88c/SPEC.md) 为基线，并保留旧版语料回归。CLI 包版本与规范版本独立。命令与响应规则见前文的 [命令](#命令) 和 [JSON 响应](#json-响应)。
+
+### 版本兼容矩阵
+
+| 根索引版本 | 路径字段解析 | 诊断 |
+| --- | --- | --- |
+| `0.3` | 所属文件目录；`/` 表示包根 | 正常消费 |
+| `0.2`、`0.1`、`0.0` | 先从文件目录解析，仅目标不存在时尝试包根 | 不因回退拒绝包 |
+| 未声明 | 与旧版相同 | 不要求补版本 |
+| 未知版本 | 按 v0.3 尽力读取，不启用旧版回退 | `UNKNOWN_OKF_VERSION` 警告 |
+
+正文链接不使用旧版路径字段回退。路径越界、权限错误不触发回退；两处目标都存在时优先所属文件目录。点文件及点目录不属于包，扫描跳过，显式读取拒绝。无 frontmatter 或无 `type` 的 Markdown 不作为概念；验证器给 `NON_CONCEPT_MARKDOWN` 警告，默认不改变退出码。已经声明但损坏的 YAML 仍是错误。索引保留普通 Markdown 的存在信息与原文，但搜索、候选检索和概念图均排除它们。
+
+包内路径区分大小写，文件系统适配器也核对实际文件名，避免 Windows 的大小写宽松查找与 Git／索引导航结果不同。索引还保留目录存在信息：文件相对目标实际是目录时，不得回退到包根同名概念。目录库存参与 generation 和完整性检查，单独限制为 100000 项、2 MiB JSON；`sync` 的预算字段披露目录数和字节占用。旧快照没有目录库存时，依赖旧版回退的 `neighbors` 返回 `INDEX_INVENTORY_MISSING`，需要重新 `sync`；原文读取仍可用。
+
+路径字段保留目录语法：末尾 `/`、编码后的斜杠和末段 `.`／`..` 不会被当作概念文件引用。替代目标必须是概念文件；计算资源使用目录语法时报告 `RESOURCE_NOT_A_FILE`。
+
+`tags`、`sources`、`verified`、`parameters` 接受单项或列表；单个标签不按逗号拆分。null、空字符串和空列表等价于缺省。原始 YAML 值与原文字节不被消费归一化改写。
 
 ### 诊断与消费
 
@@ -322,9 +341,9 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | 检查对象 | 规则与规范依据 | 诊断 code | 级别 |
 | --- | --- | --- | --- |
 | 概念结构 | UTF-8、可解析的 YAML mapping、非空字符串 `type`；§4、§11 | `INVALID_OKF` | error |
-| 保留文件 | 根索引允许 `okf_version` frontmatter，子目录索引不带 frontmatter；日志日期标题为有效的 `YYYY-MM-DD`；§8、§9 | `INVALID_OKF` | error |
+| 保留文件 | 根索引允许 `okf_version`、`title`、`description`、`license` 与扩展元数据；子目录索引和日志不带 frontmatter；日志日期标题为有效的 `YYYY-MM-DD`；§8、§9 | `INVALID_OKF` | error |
 | `title`、`description`、`resource` | 出现时为字符串；§4.1 | `INVALID_METADATA_TYPE` | warning |
-| `tags` | 出现时为字符串列表，定位到无效元素；§4.1 | `INVALID_METADATA_TYPE` | warning |
+| `tags` | 接受单个字符串或字符串列表，定位到无效元素；§4.1 | `INVALID_METADATA_TYPE` | warning |
 | `generated` | 出现时为对象，`by` 为非空 Actor；`at` 可省略，出现时检查时间；§5.2、§7 | 类型、必填字段、Actor 或时间诊断 | warning |
 | `verified` | 对象与单元素列表等价；每个事件为对象，包含 `by` 与 `at`；§5.2、§7 | 类型、必填字段、Actor 或时间诊断 | warning |
 | 审核时序 | `generated` 与 `verified` 同时存在，但无法解析 `generated.at`；定位到 `/generated` | `INDETERMINATE_VERIFICATION_TIME` | warning |
@@ -333,11 +352,11 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | 来源信号 | `usage_count` 为非负整数；`last_modified` 为带时区时间；§5.1 | `INVALID_METADATA_VALUE`、`INVALID_TIMESTAMP` | warning |
 | `usage_window` | 共享或来源内的窗口为对象，包含带时区的 `from`、`to`，且起点不晚于终点；§5.1 | 类型、必填字段、时间诊断及 `INVALID_TIME_RANGE` | warning |
 | `status` | 出现时为字符串，规范值为 `draft`、`stable`、`deprecated`；§5.4 | `INVALID_METADATA_TYPE`、`INVALID_STATUS` | warning |
-| `stale_after` | 出现时为带显式 UTC 偏移的时间；§5.5 | `INVALID_TIMESTAMP` | warning |
+| `stale_after` | 接受纯日期或带显式 UTC 偏移的日期时间；§5.5 | `INVALID_TIMESTAMP` | warning |
 
-对象中缺少上述必填子字段使用 `MISSING_METADATA_FIELD`，必填字符串为空使用 `INVALID_METADATA_VALUE`。Actor 采用 `human:<id>`、`process:<id>` 或 `<producer>/<version>`，形状不符使用 `INVALID_ACTOR`。来源 `author` 保留生产者声明，仅检查字符串形状，不参与审核层级派生。
+对象中缺少上述必填子字段使用 `MISSING_METADATA_FIELD`，仅含空白的必填字符串使用 `INVALID_METADATA_VALUE`。Actor 接受 `<scheme>:<id>` 或 `<producer>/<version>`；`team:` 和未知 scheme 按非人工身份处理，形状不符使用 `INVALID_ACTOR`。来源 `author` 保留生产者声明，仅检查字符串形状，不参与审核层级派生。
 
-时间检查与过期派生共用解析器，支持 RFC 3339、无冒号的数字偏移、精确到分钟的扩展时间和基本日期时间形式；均要求显式偏移与正确的组件补零宽度。纯日期、缺少时区、非法偏移或无法表示的日期时间使用 `INVALID_TIMESTAMP`。
+时间检查与过期派生共用解析器，支持 RFC 3339，以及兼容旧语料的无冒号数字偏移、精确到分钟的扩展时间和基本日期时间形式；日期时间要求显式偏移与正确的组件补零宽度。另接受 `YYYY-MM-DD` 纯日期，含义为当天 UTC 00:00:00。缺少时区的日期时间、非法偏移或无效日期使用 `INVALID_TIMESTAMP`。
 
 整数读取保留 YAML 解析器支持的 128 位值。超出 64 位范围的合法非负 `usage_count` 仍按整数处理；负数和小数报告警告，原文保持不变。
 
@@ -345,13 +364,15 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 卡片只从具有有效 Actor 和可解析 `at` 的当前审核事件派生审核层级：`generated` 不存在，或审核时间不早于 `generated.at`。无当前有效事件时为 `unverified`；只有非人工事件时为 `machine-confirmed`；存在当前人工审核时为 `human-reviewed`，即使另有更晚的机器审核。`generated` 存在但时间缺失、非法或对象格式错误时，派生为 `unverified`，诊断见上表。历史事件保留在原文中。
 
-这实现了 OKF v0.3 的审核时序规则，不代表完整 v0.3 兼容；纯日期与扩展 Actor scheme 仍受上述解析规则限制。等级是声明性信号，不认证审核者身份。升级与索引兼容说明见 [审核等级修复](releases.md#未发布审核等级修复)。
+只有 `human:` 派生人工审核等级。null、空字符串和空列表按字段缺省处理；`generated: {}` 仍是缺少更新时间的对象，不能据此派生当前审核。等级是声明性信号，不认证审核者身份。升级后需重新同步索引，见版本兼容矩阵与索引说明。
 
-缺少或非字符串 `status` 派生为 `stable`；未知字符串状态原样保留并附警告。非法 `stale_after` 派生为 `unknown`，到期判断使用 `now >= stale_after`。
+缺少或空 `status` 派生为 `stable`；未知状态保留其值（非字符串转换为显示字符串）并附警告，不通过 stable 筛选。非法 `stale_after` 派生为 `unknown`，到期判断使用 `now >= stale_after`。
 
 ### 正文链接与来源脚注
 
 `validate` 对 `sources[].resource` 按材料标识检查，不会触发网络访问或文件存在性检查。来源归因通过脚注标签与 `sources[].id` 关联，不依赖来源在列表中的位置；来源无需全部被引用。
+
+来源范围描述可以包含空白、冒号等非路径文本；没有显式路径前缀的此类描述不会被 `neighbors` 当成坏路径。以 `/`、`./`、`../` 开头的显式路径仍接受正常的路径诊断。
 
 使用 Markdown 解析器提取普通链接、引用式链接、图片引用与脚注，排除代码和 HTML 块中的链接。图片不构成关系导航边；图片附件目标检查由 `validate --attachments` 显式启用。包根路径以 `/` 开头，文档相对路径允许 `.` 和 `..`，归一化后必须留在知识包内。路径中的百分号编码按 UTF-8 解码；查询串和片段不参与文件定位。外部 URI 不触发访问，默认保留片段但不检查锚点；显式启用 `--anchor-style headings-v1` 后按下述 CLI 扩展规则检查，不代表所有渲染器。
 
@@ -367,6 +388,8 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 
 按需读取仅检查当前文件，不访问链接目标；`validate` 复用完整目录清单检查目标。保留文件参与链接检查，但不要求来源 frontmatter。正文位置的响应格式见 [JSON 响应](cli-contract.md#json-响应)。
 
+启用锚点检查时，普通非概念 Markdown 也提供目标标题清单，因此指向 `README.md#intro` 等文档的链接可以被检查；这些文件仍不作为概念，也不提取概念关系。
+
 ### 计算合同与正文
 
 仅对 `type: Attested Computation` 启用以下检查，依据为规范 §10.2、§10.3。未知类型的同名扩展字段保持原样；runtime 和参数类型名称均不限定枚举。
@@ -374,7 +397,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | 检查对象 | 规则 | 诊断 |
 | --- | --- | --- |
 | `runtime` | 此类型需要给出非空字符串 | 通用字段缺失、类型或取值警告 |
-| `parameters` | 可省略或为空列表；出现时每项为对象，包含非空字符串 `name`、`type` 和布尔值 `required` | 通用字段警告；重名使用 `DUPLICATE_PARAMETER_NAME` |
+| `parameters` | 可省略，接受单对象或列表；每项包含非空字符串 `name`、`type`；`required` 可省略，默认 `false`，出现时为布尔值 | 通用字段警告；重名使用 `DUPLICATE_PARAMETER_NAME` |
 | `computation` | 出现时为非空文件路径或 URI 字符串 | 通用字段警告 |
 | `executor`、`attester` | 出现时为对象，内部 `resource` 为非空字符串 | 通用字段警告 |
 | `executor.receipt` | 出现时为非空字段名字符串组成的列表，可为空列表 | 通用字段警告 |
@@ -383,7 +406,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | 多个内联计算块 | 计算章节内包含多个围栏代码块 | `MULTIPLE_COMPUTATIONS` |
 | 空计算块 | 内联计算块仅含空白 | `EMPTY_COMPUTATION` |
 
-内联计算使用顶层一级标题（H1）`Computation` 章节内的单个非空围栏代码块，章节持续到下一个顶层 H1。标题按 Markdown 可见文本匹配，区分大小写、忽略两端空白，包含行内格式和图片替代文本；换行保留词间边界。
+内联计算接受任意 ATX 标题级别的 `Computation` 章节，使用其中第一个围栏代码块，章节持续到下一个同级或更高级标题。标题按 Markdown 可见文本匹配，区分大小写、忽略两端空白，包含行内格式和图片替代文本；换行保留词间边界。
 
 子标题不会结束计算章节，其中的围栏代码块仍计入计算块数量。章节之外的示例代码，以及引用块、列表、脚注和代码中的标题不作为计算入口。缩进代码块不满足围栏代码块约定。
 
@@ -404,7 +427,7 @@ result = 1 + 1
 
 字段问题通过 JSON Pointer 定位，计算正文问题使用原文件字节范围。文件声明本身不合法时报告字段问题，避免再附加缺少内联计算的级联警告。所有计算诊断均为质量警告，与其他元数据和正文警告共用相应上限。
 
-按需读取不访问声明资源。`validate` 对 `computation`、`executor.resource`、`attester.resource` 执行元信息查询，不读取资源内容、执行计算或核验 Receipt。路径相对于知识包根目录，外部 URI 跳过；`sources[].resource` 不参与此检查。
+按需读取不访问声明资源。`validate` 对 `computation`、`executor.resource`、`attester.resource` 执行元信息查询，不读取资源内容、执行计算或核验 Receipt。路径从所属文件目录解析，以 `/` 开头时从包根解析；旧版回退见兼容矩阵。外部 URI 跳过；`sources[].resource` 可为范围描述，不参与此存在性检查。
 
 | 资源诊断 | 含义 |
 | --- | --- |
@@ -440,6 +463,6 @@ result = 1 + 1
 
 ### 可选附件与锚点检查
 
-`validate --attachments` 增加普通正文链接与图片引用的附件元信息检查，返回 `MISSING_ATTACHMENT`/`MISSING_IMAGE` 字节位置警告，不读取附件内容；`attachment_check` 报告 `images_included`（恒为 `true`）、`images_checked`（图片引用数量）与 `types`（检查目标的小写扩展名集合，去重、升序，图片与普通附件一并计入）。`--anchor-style headings-v1` 增加显式规则下的 `MISSING_ANCHOR` 警告，规则与覆盖说明见 [CLI 参考](cli-contract.md#关系导航与扩展检查)。这两项均不增加 OKF 必填要求，质量警告不改变文档结构合规性。
+`validate --attachments` 返回 `MISSING_ATTACHMENT`／`MISSING_IMAGE` 字节位置警告；`--anchor-style headings-v1` 返回 `MISSING_ANCHOR` 警告。参数、统计字段及覆盖规则见 [关系导航与扩展检查](#关系导航与扩展检查)。这两项均不增加 OKF 必填要求，质量警告不改变文档结构合规性。
 
 附件与锚点结果分别返回 `attachment_check`、`anchor_check`，不替代原有 `link_check` 和计算 `resource_check`。完整列举前不判断链接目标缺失；附件只查询元信息，锚点复用本次已读取文档的标题清单。显式 HTML `id`/`name` 锚点的属性值先解码字符引用（如 `&amp;`、`&#45;`、`&#x2D;`）再匹配；无法识别的自定义 HTML 锚点保留为未检查。

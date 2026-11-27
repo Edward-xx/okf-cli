@@ -28,6 +28,12 @@ pub fn resolve_link(document: &str, destination: &str) -> Result<LinkTarget> {
     resolve_destination(document, destination).map(|(target, _)| target)
 }
 
+/// Preserve directory syntax (including encoded slashes and dot segments) for
+/// path-field consumers, just as BodyLink does for Markdown references.
+pub fn directory_reference(document: &str, destination: &str) -> Result<bool> {
+    resolve_destination(document, destination).map(|(_, directory)| directory)
+}
+
 fn resolve_destination(document: &str, destination: &str) -> Result<(LinkTarget, bool)> {
     logical_path(document)?;
     if destination.starts_with("//") || uri_scheme(destination) {
@@ -172,11 +178,9 @@ impl Markdown {
         let mut computation = frontmatter
             .filter(|fm| crate::computation::is_attested(fm))
             .map(crate::computation::ComputationBody::new);
-        let sources: BTreeSet<&str> = frontmatter
-            .and_then(|fm| fm.get("sources"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+        let sources: BTreeSet<&str> = crate::items(frontmatter.and_then(|fm| fm.get("sources")))
+            .iter()
+            .filter(|source| source.get("resource").is_some_and(crate::present))
             .filter_map(|source| source.get("id").and_then(Value::as_str))
             .collect();
         let body = &raw[body_start..];
@@ -185,7 +189,7 @@ impl Markdown {
                 .into_offset_iter()
         {
             if let Some(computation) = &mut computation {
-                computation.event(&event, range.clone());
+                computation.event(&event, range.clone(), body);
             }
             // Undefined footnotes are literal text in GFM. Inspect only contiguous text
             // events so code, HTML, escaped brackets, and images remain excluded.

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 pub const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_INDEX_DOCUMENTS: usize = 100_000;
+pub const MAX_DIRECTORY_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedDocument {
     pub path: String,
@@ -19,6 +20,9 @@ pub struct Snapshot {
     pub upstream_revision: Option<String>,
     pub checked_at: String,
     pub documents: Vec<IndexedDocument>,
+    /// None identifies a legacy snapshot without directory existence evidence.
+    #[serde(default)]
+    pub directories: Option<Vec<String>>,
 }
 #[derive(Debug, Clone)]
 pub struct IndexStats {
@@ -48,6 +52,20 @@ pub fn index_generation<'a>(
     Ok(sha256(
         &serde_json::to_vec(&(revision, entries.into_iter().collect::<Vec<_>>()))
             .map_err(Error::io)?,
+    ))
+}
+
+pub fn inventory_generation<'a>(
+    revision: Option<&str>,
+    entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+    directories: &[String],
+) -> Result<String> {
+    let content = index_generation(revision, entries)?;
+    if directories.is_empty() {
+        return Ok(content);
+    }
+    Ok(sha256(
+        &serde_json::to_vec(&(content, directories)).map_err(Error::io)?,
     ))
 }
 
@@ -147,6 +165,8 @@ impl App<'_> {
         let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut queue = VecDeque::from([String::new()]);
         let mut documents = BTreeMap::new();
+        let mut directories = std::collections::BTreeSet::new();
+        let mut directory_bytes = 0;
         let mut bytes = 0;
         let mut complete = true;
         'scan: while let Some(directory) = queue.pop_front() {
@@ -163,7 +183,24 @@ impl App<'_> {
                 response.partial("SCAN_LIMIT", "incomplete scan; previous index retained");
             }
             for entry in listing.entries {
+                if okf_core::excluded_path(&entry.path) {
+                    continue;
+                }
                 if entry.directory {
+                    // Bound both storage and subsequent offline graph resolution.
+                    let size = serde_json::to_vec(&entry.path).map_err(Error::io)?.len() + 1;
+                    if size > MAX_DIRECTORY_BYTES.saturating_sub(directory_bytes + 2)
+                        || directories.len() >= MAX_INDEX_DOCUMENTS
+                    {
+                        complete = false;
+                        response.partial(
+                            "INDEX_LIMIT",
+                            "directory inventory exceeds count or byte budget",
+                        );
+                        break 'scan;
+                    }
+                    directory_bytes += size;
+                    directories.insert(entry.path.clone());
                     queue.push_back(entry.path);
                     continue;
                 }
@@ -174,11 +211,16 @@ impl App<'_> {
                         if reserved(&entry.path) {
                             validate_reserved(&entry.path, &raw)?;
                         } else {
-                            Document::parse(&raw)?;
+                            okf_core::classify(&entry.path, &raw)?;
                         }
                         Ok(raw)
                     }) {
                     Ok(raw) => {
+                        if entry.path == "index.md" {
+                            let metadata = okf_core::BundleMetadata::parse(&raw)?;
+                            response.diagnostics.extend(metadata.diagnostics());
+                            response.data["bundle_metadata"] = json!(metadata.fields);
+                        }
                         if raw.len() > MAX_INDEX_BYTES - bytes {
                             complete = false;
                             response.partial(
@@ -213,7 +255,8 @@ impl App<'_> {
                 response.partial(&error.code, &error.message);
             }
         }
-        response.budget = json!({"scan_limit":options.max_scan,"scanned_entries":scan.used(),"index_bytes_limit":MAX_INDEX_BYTES,"index_bytes_used":bytes});
+        response.budget = json!({"scan_limit":options.max_scan,"scanned_entries":scan.used(),"index_bytes_limit":MAX_INDEX_BYTES,"index_bytes_used":bytes,
+            "directory_bytes_limit":MAX_DIRECTORY_BYTES,"directory_bytes_used":directory_bytes + 2,"indexed_directories":directories.len()});
         response.observe(
             &binding,
             self.now,
@@ -224,15 +267,18 @@ impl App<'_> {
         if complete {
             let documents: Vec<_> = documents.into_values().collect();
             let revision = binding.git.as_ref().map(|g| g.commit.clone());
-            let generation = index_generation(
+            let directories: Vec<_> = directories.into_iter().collect();
+            let generation = inventory_generation(
                 revision.as_deref(),
                 documents.iter().map(|d| (d.path.as_str(), d.hash.as_str())),
+                &directories,
             )?;
             let snapshot = Snapshot {
                 generation,
                 upstream_revision: revision,
                 checked_at: self.now.to_rfc3339(),
                 documents,
+                directories: Some(directories),
             };
             self.control.check()?;
             index.publish_controlled(
@@ -662,6 +708,13 @@ impl App<'_> {
             .and_then(|s| s.split_once('/'))
             .ok_or_else(|| Error::new("INVALID_REFERENCE", "expected @bundle/path", 2))?;
         let path = okf_core::logical_path(id)?;
+        if okf_core::excluded_path(&path) {
+            return Err(Error::new(
+                "NOT_FOUND",
+                "dot paths are outside the bundle",
+                3,
+            ));
+        }
         let path = if path.ends_with(".md") {
             path
         } else {
@@ -713,13 +766,13 @@ impl App<'_> {
         } else {
             None
         };
+        let parsed = okf_core::classify(&path, &doc.raw)?;
         let mut response = Response::new(
             "read",
-            json!({"document":{"bundle_id":binding.id,"path":path,"concept_id":if reserved(&path) {None} else {path.strip_suffix(".md")},"content_sha256":doc.hash,"generation":snapshot.generation,
+            json!({"document":{"bundle_id":binding.id,"path":path,"concept_id":if parsed.is_some() {path.strip_suffix(".md")} else {None},"content_sha256":doc.hash,"generation":snapshot.generation,
             "upstream_revision":snapshot.upstream_revision,"byte_start":start,"byte_end":end,"total_bytes":doc.raw.len(),"text":&doc.raw[start..end]}}),
         );
-        if !reserved(&path) {
-            let parsed = Document::parse(&doc.raw)?;
+        if let Some(parsed) = parsed {
             response
                 .diagnostics
                 .extend(self.document_diagnostics(&binding, &path, &doc.raw, &parsed));

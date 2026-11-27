@@ -12,8 +12,8 @@ pub(crate) fn is_attested(frontmatter: &Map<String, Value>) -> bool {
 pub(crate) struct ComputationBody {
     file_declared: bool,
     container_depth: usize,
-    heading: Option<(String, Range<usize>)>,
-    section: bool,
+    heading: Option<(String, Range<usize>, HeadingLevel)>,
+    section_level: Option<HeadingLevel>,
     section_location: Option<Range<usize>>,
     fence: Option<(Range<usize>, bool)>,
     second_fence: Option<Range<usize>>,
@@ -24,12 +24,12 @@ pub(crate) struct ComputationBody {
 impl ComputationBody {
     pub(crate) fn new(frontmatter: &Map<String, Value>) -> Self {
         Self {
-            file_declared: frontmatter.contains_key("computation"),
+            file_declared: frontmatter.get("computation").is_some_and(crate::present),
             ..Self::default()
         }
     }
 
-    pub(crate) fn event(&mut self, event: &Event<'_>, range: Range<usize>) {
+    pub(crate) fn event(&mut self, event: &Event<'_>, range: Range<usize>, body: &str) {
         match event {
             Event::Start(Tag::BlockQuote(_) | Tag::List(_) | Tag::FootnoteDefinition(_)) => {
                 self.container_depth += 1;
@@ -43,15 +43,17 @@ impl ComputationBody {
             _ => {}
         }
         match event {
-            Event::Start(Tag::Heading {
-                level: HeadingLevel::H1,
-                ..
-            }) => {
-                self.heading = Some((String::new(), range));
-                self.section = false;
+            Event::Start(Tag::Heading { level, .. }) => {
+                if self.section_level.is_some_and(|parent| *level <= parent) {
+                    self.section_level = None;
+                }
+                self.heading = body[range.clone()]
+                    .trim_start()
+                    .starts_with('#')
+                    .then(|| (String::new(), range, *level));
             }
             Event::Text(text) | Event::Code(text) => {
-                if let Some((title, _)) = &mut self.heading {
+                if let Some((title, _, _)) = &mut self.heading {
                     title.push_str(text);
                 }
                 if let Some((_, nonempty)) = &mut self.fence {
@@ -59,19 +61,23 @@ impl ComputationBody {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some((title, _)) = &mut self.heading {
+                if let Some((title, _, _)) = &mut self.heading {
                     title.push(' ');
                 }
             }
-            Event::End(TagEnd::Heading(HeadingLevel::H1)) => {
-                if let Some((title, location)) = self.heading.take() {
-                    self.section = title.trim() == "Computation";
-                    if self.section && self.section_location.is_none() {
-                        self.section_location = Some(location);
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((title, location, level)) = self.heading.take() {
+                    if title.trim() == "Computation" {
+                        self.section_level = Some(level);
+                        if self.section_location.is_none() {
+                            self.section_location = Some(location);
+                        }
                     }
                 }
             }
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) if self.section => {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_)))
+                if self.section_level.is_some() =>
+            {
                 self.fence = Some((range, false));
             }
             Event::End(TagEnd::CodeBlock) => {
@@ -104,7 +110,7 @@ impl ComputationBody {
             )
         };
         if !self.file_declared && self.first_fence.is_none() {
-            diagnostics.push(warning("MISSING_COMPUTATION", "expected one fenced computation under # Computation or a computation file declaration", self.section_location.unwrap_or(0..0)));
+            diagnostics.push(warning("MISSING_COMPUTATION", "expected one fenced computation under an ATX Computation heading or a computation file declaration", self.section_location.unwrap_or(0..0)));
         }
         if self.file_declared {
             if let Some(range) = self.first_fence {

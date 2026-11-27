@@ -276,11 +276,21 @@
               ]
             },
             "source_paths": {
-              "const": "bundle_root_relative"
+              "const": "file_relative_with_versioned_fallback"
             },
             "complete": {
               "type": "boolean"
             }
+          }
+        },
+        "supersession_check": {
+          "type": "object",
+          "required": ["scope", "complete", "documents_checked", "scan_limit"],
+          "properties": {
+            "scope": {"type": "string"},
+            "complete": {"type": "boolean"},
+            "documents_checked": {"type": "integer", "minimum": 0},
+            "scan_limit": {"type": "integer", "minimum": 0}
           }
         }
       }

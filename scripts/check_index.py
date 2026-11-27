@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='okf-index-verify-') as temporary:
         ("UPDATE documents SET hash='damaged' WHERE path='z.md'", 'INDEX_CORRUPT'),
         ("UPDATE documents SET generation='damaged' WHERE path='z.md'", 'INDEX_GENERATION_MISMATCH'),
         ("UPDATE documents SET path='../z.md' WHERE path='z.md'", 'INDEX_PATH_INVALID'),
-        ("INSERT INTO documents SELECT bundle,'extra.md',hash,raw,generation FROM documents WHERE path='z.md'", 'INDEX_SNAPSHOT_MISMATCH'),
+        ("INSERT INTO documents SELECT bundle,'extra.md',hash,raw,generation,concept FROM documents WHERE path='z.md'", 'INDEX_SNAPSHOT_MISMATCH'),
         ("DELETE FROM documents WHERE path='z.md'", 'INDEX_SNAPSHOT_MISMATCH'),
     ):
         with closing(sqlite3.connect(database)) as connection:
@@ -79,8 +79,8 @@ with tempfile.TemporaryDirectory(prefix='okf-index-verify-') as temporary:
         # Keep this case focused on legacy body-only verification and its byte cap.
         connection.execute('DELETE FROM candidate_snapshots')
         connection.execute('DELETE FROM documents')
-        connection.executemany('INSERT INTO documents VALUES (?,?,?,?,?)',
-                               ((key, f'{i:03}.md', digest, raw, generation) for i in range(33)))
+        connection.executemany('INSERT INTO documents VALUES (?,?,?,?,?,?)',
+                               ((key, f'{i:03}.md', digest, raw, generation, 0) for i in range(33)))
         connection.commit()
     partial = run('index', 'verify', 'book', code=7)
     assert partial['data']['valid'] is None and not partial['data']['complete']
@@ -95,10 +95,10 @@ with tempfile.TemporaryDirectory(prefix='okf-index-verify-') as temporary:
     assert not partial['data']['complete'] and partial['data']['failures'] == 1
     assert {d['code'] for d in partial['diagnostics']} == {'INDEX_CORRUPT', 'SCAN_LIMIT'}
     with closing(sqlite3.connect(database)) as connection:
-        connection.execute('PRAGMA user_version=2')
+        connection.execute('PRAGMA user_version=99')
     incompatible = run('index', 'verify', 'book', code=2)
     assert incompatible['status'] == 'error'
     assert incompatible['data']['error']['code'] == 'INDEX_VERSION'
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert connection.execute('PRAGMA user_version').fetchone()[0] == 99
 print(f'Index verification passed: {calls} CLI calls, partial coverage, corruption, repair and offline reads')

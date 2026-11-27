@@ -12,7 +12,7 @@ After browsing the bundle map, use `--dir PATH` on search or queried context to 
 
 Bindings can reference local directories or pinned Git commits. Git bindings keep their commit until an explicit `bundle refresh NAME`; preserve `upstream_revision` when citing them. Check command help for supported options. Default `context --query` returns metadata candidates and read entry points; fetch their bodies before using the knowledge.
 
-Use `--type`, `--tag` and `--status` to filter search or queried context before result selection; values match exactly. Use `okf neighbors '@NAME/path' --direction incoming --format json` (choose `incoming`, `outgoing`, or `both`) after synchronization to inspect direct indexed relationships. Keep each edge's generation and evidence hash/location or source field. A missing target remains an edge; incomplete relationship coverage cannot prove that no incoming links exist. This CLI does not infer relationships from text similarity.
+Use `--type`, `--tag` and `--status` to filter search or queried context before result selection; values match exactly. Use `okf neighbors '@NAME/path' --direction incoming --format json` (choose `incoming`, `outgoing`, or `both`) after synchronization to inspect direct indexed relationships. Keep each edge's generation and evidence hash/location or metadata field. Missing or non-concept targets produce diagnostics instead of edges; incomplete relationship coverage cannot prove that no incoming links exist. Replacement navigation preserves the original concept and evidence. This CLI does not infer relationships from text similarity.
 
 When the task requires review or expiry constraints, use `--trust human-reviewed` or `--expiry current`; trust choices are `unverified`, `machine-confirmed`, `human-reviewed`, and expiry choices are `current`, `expired`, `unspecified`, `unknown`. Repeat a field for alternatives; different fields combine with AND. `--as-of` accepts an RFC 3339 timestamp with an offset to reproduce lifecycle evaluation, including offline index queries. Preserve `data.evaluated_at`; it is distinct from the observation time and does not prove the source is current. Apply these constraints when relevant to the task rather than silently hiding all unreviewed or undated knowledge.
 
@@ -34,7 +34,7 @@ Indexed search and context can opt into persistent candidate selection with `--c
 
 When index integrity is in question, use `index verify NAME --format json` for a read-only check of stored paths, hashes and generation. Inspect `data.complete` and `data.valid`: a null validity result is inconclusive. A valid index does not prove that live source files are unchanged. Follow the user's request when deciding to repair findings with `sync NAME`.
 
-Candidate data has an independent format version. Older derived data can require a new sync even when ordinary indexed reads still work. Do not treat this as a need to recreate bindings or delete databases. `--raw` and `--indexed` are mutually exclusive; `--generation` requires `--indexed`.
+Candidate data has an independent format version. Older derived data can require a new sync even when ordinary indexed reads still work. `INDEX_VERSION` means the content database needs migration; `INDEX_INVENTORY_MISSING` means legacy relationship navigation lacks a directory inventory. Synchronize the affected bundle when authorized and its source is accessible; do not recreate bindings or delete databases. `--raw` and `--indexed` are mutually exclusive; `--generation` requires `--indexed`.
 
 ## Validation
 
@@ -46,7 +46,7 @@ okf validate NAME --attachments --anchor-style headings-v1 --format json
 okf validate NAME --max-warnings 0 --format json
 ```
 
-- For `Attested Computation`, read the contract and its `# Computation` content or file declaration. Static validation reports definition issues; per-run receipt verification requires a separate execution and attestation workflow.
+- For `Attested Computation`, read the contract and its `Computation` section (any ATX heading level) or file declaration. Static validation reports definition issues; per-run receipt verification requires a separate execution and attestation workflow.
 - Ordinary metadata and body warnings do not invalidate a concept. Diagnostic truncation can leave checks incomplete, and an explicit warning threshold can change the exit status. Use `path` with the JSON Pointer `field` or original-file byte `location` to locate findings. Preserve relevant qualifications when using the knowledge. `validate` checks link targets only after complete enumeration; inspect `data.link_check.complete` before interpreting the absence of broken-link warnings.
 - `validate` also checks declared bundle-local computation resources without loading or executing them. Check `data.resource_check.complete` separately from Markdown link coverage; external URIs are counted as skipped.
 - `validate --attachments` checks non-Markdown body links and image references via metadata queries without reading attachment content; `data.attachment_check` reports `images_included`, `images_checked`, and `types` (lowercase, deduplicated, ascending extensions of checked targets).

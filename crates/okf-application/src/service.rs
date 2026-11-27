@@ -134,7 +134,7 @@ impl App<'_> {
         let raw = self
             .reader
             .read(binding, path, MAX_DOCUMENT, self.control)?;
-        let doc = Document::parse(&raw)?;
+        let doc = okf_core::classify(path, &raw)?.ok_or_else(okf_core::not_concept)?;
         let diagnostics = self.document_diagnostics(binding, path, &raw, &doc);
         let id = path.strip_suffix(".md").unwrap_or(path);
         let card = doc.card(id, self.now);
@@ -219,7 +219,11 @@ impl App<'_> {
                 7,
             ));
         }
-        let entries = listing.entries;
+        let entries: Vec<_> = listing
+            .entries
+            .into_iter()
+            .filter(|e| !okf_core::excluded_path(&e.path))
+            .collect();
         let revision = cursor_revision(
             &binding,
             &sha256(&serde_json::to_vec(&entries).map_err(Error::io)?),
@@ -282,6 +286,10 @@ impl App<'_> {
                             response.partial("CACHE_WRITE_FAILED", &error.message);
                         }
                         card
+                    }
+                    Err(error) if error.code == "NOT_CONCEPT" => {
+                        index += 1;
+                        continue;
                     }
                     Err(error) if interrupted(&error) => {
                         complete = false;
@@ -368,8 +376,9 @@ impl App<'_> {
         let concept_id = path.strip_suffix(".md").unwrap_or(&path);
         let mut response = Response::new("read", json!({}));
         if !reserved(&path) {
-            match Document::parse(&raw) {
-                Ok(doc) => {
+            match okf_core::classify(&path, &raw) {
+                Ok(None) => {}
+                Ok(Some(doc)) => {
                     let card = doc.card(concept_id, self.now);
                     response
                         .diagnostics
@@ -418,7 +427,7 @@ impl App<'_> {
             None
         };
         response.data["document"] = json!({"bundle_id": binding.id, "path": path,
-            "concept_id": concept_id, "content_sha256": hash, "upstream_revision": binding.git.as_ref().map(|g| &g.commit),
+            "concept_id": if response.data.get("card").is_some() { Some(concept_id) } else { None }, "content_sha256": hash, "upstream_revision": binding.git.as_ref().map(|g| &g.commit),
             "byte_start": start, "byte_end": end, "total_bytes": raw.len(), "text": &raw[start..end]});
         self.control.check()?;
         response.page = json!({"returned": 1, "total": 1, "has_more": more, "next_cursor": cursor});
@@ -506,6 +515,9 @@ impl App<'_> {
                     response.issue(&Error::new("SCAN_LIMIT", "metadata scan budget reached; increase --max-scan or select fewer bundles", 7), &format!("@{}/{}", binding.name, directory));
                 }
                 for entry in listing.entries {
+                    if okf_core::excluded_path(&entry.path) {
+                        continue;
+                    }
                     if let Err(error) = self.control.check() {
                         response.issue(&error, &format!("@{}", binding.name));
                         complete = false;
@@ -531,6 +543,7 @@ impl App<'_> {
                                 }
                                 card
                             }
+                            Err(error) if error.code == "NOT_CONCEPT" => continue,
                             Err(error) => {
                                 response
                                     .issue(&error, &format!("@{}/{}", binding.name, entry.path));
@@ -624,6 +637,7 @@ impl App<'_> {
         let mut link_bytes = 0;
         let mut body_warnings = BTreeMap::<String, BodyWarningState>::new();
         let mut resources = crate::resources::Resources::new(resource_limit);
+        let mut bundle_metadata = okf_core::BundleMetadata::default();
         let mut sections = BTreeMap::new();
         let mut section_bytes = 0;
         let mut anchors_complete = true;
@@ -655,6 +669,9 @@ impl App<'_> {
                 );
             }
             for entry in listing.entries {
+                if okf_core::excluded_path(&entry.path) {
+                    continue;
+                }
                 if let Err(error) = self.control.check() {
                     complete = false;
                     response.issue(&error, &format!("@{}", binding.name));
@@ -666,21 +683,11 @@ impl App<'_> {
                     continue;
                 }
                 existing.insert(entry.path.clone(), false);
+                let mut is_concept = false;
                 let result = self
                     .reader
                     .read(&binding, &entry.path, MAX_DOCUMENT, self.control)
                     .and_then(|raw| {
-                        let (mut diagnostics, markdown) = if reserved(&entry.path) {
-                            validate_reserved(&entry.path, &raw)?;
-                            (vec![], self.markdown(&binding, &entry.path, &raw, None))
-                        } else {
-                            let doc = Document::parse(&raw)?;
-                            resources.collect(&entry.path, &doc);
-                            (
-                                doc.diagnostics(&format!("@{}/{}", binding.name, entry.path)),
-                                self.markdown(&binding, &entry.path, &raw, Some(&doc)),
-                            )
-                        };
                         if anchors {
                             let body_start =
                                 okf_core::frontmatter(&raw).map_or(0, |(_, start)| start);
@@ -701,6 +708,35 @@ impl App<'_> {
                                 anchors_limited = true;
                             }
                         }
+                        let (mut diagnostics, markdown) = if reserved(&entry.path) {
+                            validate_reserved(&entry.path, &raw)?;
+                            let diagnostics = if entry.path == "index.md" {
+                                bundle_metadata = okf_core::BundleMetadata::parse(&raw)?;
+                                bundle_metadata.diagnostics()
+                            } else {
+                                vec![]
+                            };
+                            (
+                                diagnostics,
+                                self.markdown(&binding, &entry.path, &raw, None),
+                            )
+                        } else {
+                            let Some(doc) = okf_core::classify(&entry.path, &raw)? else {
+                                let mut warning = Diagnostic::warning(
+                                    "NON_CONCEPT_MARKDOWN",
+                                    "skipping Markdown without a concept type",
+                                    None,
+                                );
+                                warning.path = Some(entry.path.clone());
+                                return Ok(vec![warning]);
+                            };
+                            is_concept = true;
+                            resources.collect(&entry.path, &doc);
+                            (
+                                doc.diagnostics(&format!("@{}/{}", binding.name, entry.path)),
+                                self.markdown(&binding, &entry.path, &raw, Some(&doc)),
+                            )
+                        };
                         let count = markdown
                             .diagnostics
                             .iter()
@@ -762,12 +798,13 @@ impl App<'_> {
                 }
                 response.data["checked"] =
                     json!(response.data["checked"].as_u64().unwrap_or(0) + 1);
-                if !reserved(&entry.path) {
+                if is_concept {
                     response.data["concepts"] =
                         json!(response.data["concepts"].as_u64().unwrap_or(0) + 1);
                 }
             }
         }
+        response.data["bundle_metadata"] = json!(bundle_metadata.fields);
         // A missing target can only be established after complete enumeration.
         // No target reads or network requests are needed for this check.
         let metadata_complete = complete;
@@ -927,6 +964,7 @@ impl App<'_> {
             "external_links": external_links
         });
         resources.check(
+            &bundle_metadata,
             &binding,
             self.reader,
             self.control,

@@ -12,8 +12,8 @@ mod quality;
 mod resources;
 pub use filter::SearchFilter;
 pub use index::{
-    index_generation, Index, IndexStats, IndexVerification, IndexedDocument, Snapshot,
-    MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
+    index_generation, inventory_generation, Index, IndexStats, IndexVerification, IndexedDocument,
+    Snapshot, MAX_DIRECTORY_BYTES, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
 };
 mod service;
 use chrono::{DateTime, Utc};
