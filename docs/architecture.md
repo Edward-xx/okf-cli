@@ -13,7 +13,7 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 
 ### 领域术语
 
-领域定义沿用固定语料对应的 [OKF v0.2 §2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md#2-terminology)。
+领域与消费规则采用固定提交的 [OKF v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/527e81aff55992be21507e97004286789126f88c/SPEC.md)，旧版语料继续回归；版本回退与索引迁移见 [CLI 兼容矩阵](cli-contract.md#版本兼容矩阵)。
 
 | OKF 概念 | 在本项目中的含义 |
 | --- | --- |
@@ -73,13 +73,13 @@ flowchart TD
 
 ### 文件与模型
 
-知识文件使用 UTF-8 Markdown 和 YAML frontmatter。`Document` 保留 frontmatter 与正文起始偏移；原文由读取流程单独保留，不经渲染重写。概念必须有非空字符串 `type`，未知元数据字段保留。
+知识文件使用 UTF-8 Markdown，概念通过 YAML frontmatter 声明非空字符串 `type`。`classify` 区分概念、普通 Markdown 与保留文件，损坏的已声明 frontmatter 仍返回错误。`Document` 保留原始 frontmatter 与正文起始偏移；诊断和卡片使用归一化消费视图，原文与未知字段不被改写。
 
 `YamlValue` 负责 YAML 到 JSON 值的转换，保留解析器支持的 128 位整数和普通映射键，避免扩展字段与 JSON 库的内部数值标记冲突。
 
 概念 ID 为包内路径去掉末尾一个 `.md`；引用格式为 `@别名/路径`。逻辑路径统一使用 `/`，允许 Unicode 和空格，拒绝绝对路径、反斜杠、盘符及 `.`、`..` 路径段。`index.md` 和 `log.md` 是保留资源，不作为普通概念卡片。
 
-`Document::parse` 检查概念结构，`Document::diagnostics` 返回带字段定位的元数据警告，`Document::card` 派生卡片。时间解析和 Actor 规则由诊断与卡片派生共用，具体规则见 [检查矩阵](cli-contract.md#okf-检查矩阵)。应用层提供完整文件引用，将元数据警告与读取故障分别汇入响应，并复用缓存写入流程记录卡片观测。
+`BundleMetadata` 读取根索引元数据与规范版本，`resolve_path_field` 统一标准路径字段的解析和旧版回退。`Document::diagnostics` 返回带字段定位的元数据警告，`Document::card` 派生卡片；两者共用时间解析和 Actor 规则，具体规则见 [检查矩阵](cli-contract.md#okf-检查矩阵)。应用层提供完整文件引用，将元数据警告与读取故障分别汇入响应，并复用缓存写入流程记录卡片观测。
 
 `Markdown` 使用解析器事件提取正文链接和脚注，保留完整原文件的字节位置。正文路径解析同时确定包内路径与目录导航形式，与 CLI 引用校验分开。应用层复用正文诊断，`validate` 在完整列举后比对目标路径及文件类型，不额外读取目标或访问网络。每份文件的正文警告计数与截断状态统一维护，链接检查完整性与元数据覆盖分别报告。
 
@@ -93,7 +93,7 @@ flowchart TD
 
 `SearchFilter.directory` 限定包内目录。实时模式从目录开始遍历；SQLite 使用路径的二进制范围查询限定统计与候选，在分配多包扫描份额前排除范围外文档。默认索引查询按路径扫描，`SearchFilter.candidate_budget` 可显式启用持久候选选择，再由应用层复核原文匹配与排序。
 
-`candidate_documents` 保存来源哈希及元数据，`candidate_postings` 保存有界字符三元组，`candidate_snapshots` 记录独立派生版本与清单。派生数据和正文同事务发布；写入触发器使事务外的变动失效，最终发布才恢复清单。超过三元组容量的文档进入回退集合，不静默丢弃。元数据先按当前评估时间派生卡片筛选，正文读取和候选行读取分别受限；正文数据库仍为 v1；候选派生数据独立使用版本 2。旧正文库可继续读取，旧版候选数据需重新同步；版本与错误语义见 [候选检索](cli-contract.md#候选检索)。
+`candidate_documents` 保存来源哈希及元数据，`candidate_postings` 保存有界字符三元组，`candidate_snapshots` 记录独立派生版本与清单。派生数据和正文同事务发布；写入触发器使事务外的变动失效，最终发布才恢复清单。超过三元组容量的文档进入回退集合，不静默丢弃。元数据先按当前评估时间派生卡片筛选，正文读取和候选行读取分别受限。普通 Markdown 保留原文但不进入概念候选；目录库存参与快照 generation 和完整性校验。版本与迁移规则见下方兼容边界及 [候选检索](cli-contract.md#候选检索)。
 
 审核层级由 `okf-core::metadata::trust_tier` 集中派生，实时与索引查询及候选筛选均通过 `Document::card` 复用；有效事件与降级规则见 [派生与覆盖](cli-contract.md#派生与覆盖)。`SearchFilter` 的可选评估时间用于有效期判断，不改变审核事件相对 `generated.at` 的时序。文件观测与缓存时间保持真实请求时间。质量门槛复用验证响应中的诊断和各检查覆盖，在操作诊断汇总后应用，不重新扫描文件。
 
@@ -172,9 +172,9 @@ Git 绑定保存仓库位置、包根、请求 ref 和已解析 commit。普通�
 | --- | --- |
 | workspace 包版本 | `0.3.0`，以根目录 [Cargo.toml](../Cargo.toml) 的 `workspace.package.version` 为准；同版本构建仍需结合 `build-info` 的来源提交区分 |
 | 响应 envelope | `schema_version: 2.0` |
-| 正文数据库 | SQLite `user_version = 1` |
-| 候选派生数据 | 版本 2，只从检索字段值和正文建立候选；响应策略名仍为 `candidates-v1` |
-| 旧候选数据 | 版本 1 需重新 `sync`；默认路径检索及索引原文读取仍可使用 |
+| 正文数据库 | SQLite `user_version = 2`，记录概念分类与目录库存 |
+| 候选派生数据 | 版本 3，只从概念的检索字段值和正文建立候选；响应策略名仍为 `candidates-v1` |
+| 旧索引 | 升级后逐包 `sync`；旧 v1 库的只读入口返回 `INDEX_VERSION`，迁移细节见 [升级说明](releases.md#未发布v03-规范兼容升级) |
 | 凭据文件路径 | 新绑定保存绝对路径；已有相对路径绑定需按原调用目录确认文件后改成绝对路径 |
 
 正式发行版本与附件以 [GitHub Releases](https://github.com/coolplayagent/okf-cli/releases) 为准，平台、运行库和升级要求见 [安装与发行](releases.md#下载与安装)。workspace 包版本、响应版本和数据库版本分别维护，不应相互推断。

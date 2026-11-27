@@ -169,6 +169,7 @@ impl okf_application::Index for InterruptingIndex {
         }
         let raw = "---\ntype: Note\n---\nexample".to_string();
         Ok(Some(okf_application::Snapshot {
+            directories: Some(vec![]),
             generation: "v1".into(),
             upstream_revision: None,
             checked_at: "2030-01-01T00:00:00Z".into(),

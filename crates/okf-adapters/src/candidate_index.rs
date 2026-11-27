@@ -48,7 +48,7 @@ pub(super) fn publish(
         .map_err(Error::io)?;
     for doc in &snapshot.documents {
         control.check()?;
-        if okf_core::reserved(&doc.path) {
+        if okf_core::classify(&doc.path, &doc.raw)?.is_none() {
             continue;
         }
         let (metadata, grams) = candidate_data(&doc.path, &doc.raw)?;
@@ -79,7 +79,7 @@ pub(super) fn publish(
         documents += 1;
     }
     tx.execute(
-        "INSERT INTO candidate_snapshots VALUES(?1,?2,2,?3,?4)",
+        "INSERT INTO candidate_snapshots VALUES(?1,?2,3,?3,?4)",
         params![key, snapshot.generation, documents, postings],
     )
     .map_err(Error::io)?;
@@ -110,7 +110,7 @@ pub(super) fn header_valid(tx: &Transaction<'_>, key: &str, generation: &str) ->
     let Some((stored, version, documents, postings)) = header else {
         return Ok(false);
     };
-    if version != 2 || stored != generation {
+    if version != 3 || stored != generation {
         return Err(corrupt());
     }
     let (actual_docs, actual_postings, concepts): (usize,usize,usize) = tx.query_row(
@@ -134,7 +134,7 @@ pub(super) fn verify_document(
     raw: &str,
     hash: &str,
 ) -> Result<()> {
-    if okf_core::reserved(path) {
+    if okf_core::classify(path, raw)?.is_none() {
         return Ok(());
     }
     let (expected_metadata, expected_grams) = candidate_data(path, raw)?;
@@ -297,6 +297,7 @@ pub(super) fn select(
     request.control.check()?;
     Ok(Some(CandidateSelection {
         snapshot: Snapshot {
+            directories: None,
             generation: header.generation,
             upstream_revision: header.upstream_revision,
             checked_at: header.checked_at,

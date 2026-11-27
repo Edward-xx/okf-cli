@@ -1,5 +1,5 @@
 use crate::{BundleBinding, BundleReader, RequestControl, Response};
-use okf_core::markdown::{resolve_link, LinkTarget};
+use okf_core::markdown::LinkTarget;
 use okf_core::{Diagnostic, Document};
 use serde_json::json;
 
@@ -54,6 +54,7 @@ impl Resources {
     }
     pub fn check(
         self,
+        metadata: &okf_core::BundleMetadata,
         binding: &BundleBinding,
         reader: &dyn BundleReader,
         control: &RequestControl,
@@ -72,21 +73,41 @@ impl Resources {
                 break;
             }
             let reference = format!("@{}/{}", binding.name, path);
-            // Computation declarations are bundle-root-relative, unlike body links.
-            let resolved = resolve_link("index.md", &resource);
+            let resolved = okf_core::resolve_path_field(&path, &resource, metadata, |candidate| {
+                reader
+                    .stat(binding, candidate, control)
+                    .map(|v| v.is_some())
+            });
+            let directory =
+                okf_core::markdown::directory_reference(&path, &resource).unwrap_or(false);
             let finding = match resolved {
                 Ok(LinkTarget::External) => {
                     external += 1;
                     continue;
                 }
-                Err(error) => Some(("INVALID_RESOURCE_PATH", error.message)),
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        "INVALID_LINK_PATH" | "LINK_PATH_ESCAPE"
+                    ) =>
+                {
+                    Some(("INVALID_RESOURCE_PATH", error.message))
+                }
+                Err(error) => {
+                    complete = false;
+                    response.issue(&error, &reference);
+                    if crate::interrupted(&error) {
+                        break;
+                    }
+                    continue;
+                }
                 Ok(LinkTarget::Internal { path, .. }) => {
                     checked += 1;
                     match reader.stat(binding, &path, control) {
-                        Ok(Some(meta)) if !meta.directory => None,
+                        Ok(Some(meta)) if !meta.directory && !directory => None,
                         Ok(Some(_)) => Some((
                             "RESOURCE_NOT_A_FILE",
-                            format!("declared resource is a directory: {resource}"),
+                            format!("declared resource must identify a file: {resource}"),
                         )),
                         Ok(None) => Some((
                             "MISSING_RESOURCE",

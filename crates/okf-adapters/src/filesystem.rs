@@ -10,6 +10,30 @@ use std::{
 
 pub struct Filesystem;
 
+// Canonical paths expose the stored filename on Windows, where lookup otherwise
+// accepts differently cased names. A file symlink needs its own directory entry
+// checked: the target can have a different name. All enumeration is cancellable.
+fn exact_name(
+    path: &Path,
+    resolved: &Path,
+    link: &fs::Metadata,
+    control: &RequestControl,
+) -> Result<bool> {
+    if !link.file_type().is_symlink() && !is_reparse_point(link) {
+        return Ok(path.file_name() == resolved.file_name());
+    }
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    for entry in fs::read_dir(parent).map_err(map_io)? {
+        control.check()?;
+        if Some(entry.map_err(map_io)?.file_name().as_os_str()) == path.file_name() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl Filesystem {
     fn root(binding: &BundleBinding) -> Result<PathBuf> {
         if binding.kind != "fs" {
@@ -30,10 +54,18 @@ impl Filesystem {
         Ok(root)
     }
 
-    fn contained(root: &Path, logical: &str) -> Result<PathBuf> {
+    fn contained(root: &Path, logical: &str, control: &RequestControl) -> Result<PathBuf> {
         logical_path(logical)?;
+        if okf_core::excluded_path(logical) {
+            return Err(Error::new(
+                "NOT_FOUND",
+                "dot paths are outside the bundle",
+                3,
+            ));
+        }
         let mut actual = root.to_path_buf();
         for part in logical.split('/').filter(|part| !part.is_empty()) {
+            control.check()?;
             actual.push(part);
             let link = fs::symlink_metadata(&actual).map_err(map_io)?;
             let resolved = fs::canonicalize(&actual).map_err(map_io)?;
@@ -42,6 +74,13 @@ impl Filesystem {
                     "PATH_ESCAPE",
                     "resolved path escapes bundle root",
                     4,
+                ));
+            }
+            if !exact_name(&actual, &resolved, &link, control)? {
+                return Err(Error::new(
+                    "NOT_FOUND",
+                    "bundle paths are case-sensitive",
+                    3,
                 ));
             }
             if fs::metadata(&resolved).map_err(map_io)?.is_dir()
@@ -68,6 +107,9 @@ impl BundleReader for Filesystem {
     ) -> Result<Option<okf_application::ResourceMetadata>> {
         control.check()?;
         logical_path(path)?;
+        if okf_core::excluded_path(path) {
+            return Ok(None);
+        }
         let root = Self::root(binding)?;
         // Walk components so a missing leaf cannot hide an escaping parent link.
         let mut actual = root.clone();
@@ -82,6 +124,9 @@ impl BundleReader for Filesystem {
             let resolved = fs::canonicalize(&actual).map_err(map_io)?;
             if !resolved.starts_with(&root) {
                 return Err(Error::new("PATH_ESCAPE", "resource escapes bundle root", 4));
+            }
+            if !exact_name(&actual, &resolved, &link, control)? {
+                return Ok(None);
             }
             let meta = fs::metadata(&resolved).map_err(map_io)?;
             if meta.is_dir() && (link.file_type().is_symlink() || resolved != actual) {
@@ -119,7 +164,7 @@ impl BundleReader for Filesystem {
     ) -> Result<Listing> {
         budget.charge()?;
         let root = Self::root(binding)?;
-        let folder = Self::contained(&root, directory)?;
+        let folder = Self::contained(&root, directory, budget.control)?;
         let mut entries = vec![];
         let mut names = BTreeMap::new();
         let mut iterator = fs::read_dir(&folder).map_err(map_io)?;
@@ -137,6 +182,9 @@ impl BundleReader for Filesystem {
                 .file_name()
                 .into_string()
                 .map_err(|_| Error::new("INVALID_FILENAME", "filename must be UTF-8", 2))?;
+            if name.starts_with('.') {
+                continue;
+            }
             let path = if directory.is_empty() {
                 name.clone()
             } else {
@@ -145,7 +193,7 @@ impl BundleReader for Filesystem {
             logical_path(&path)?;
             // Do not follow directory links. Even internal links could create traversal cycles.
             let link_meta = fs::symlink_metadata(item.path()).map_err(map_io)?;
-            let actual = Self::contained(&root, &path)?;
+            let actual = Self::contained(&root, &path, budget.control)?;
             let meta = fs::metadata(&actual).map_err(map_io)?;
             if meta.is_dir() && (link_meta.file_type().is_symlink() || actual != folder.join(&name))
             {
@@ -192,7 +240,7 @@ impl BundleReader for Filesystem {
     ) -> Result<String> {
         control.check()?;
         let root = Self::root(binding)?;
-        let actual = Self::contained(&root, path)?;
+        let actual = Self::contained(&root, path, control)?;
         let mut file = fs::File::open(&actual).map_err(map_io)?;
         let before = file.metadata().map_err(map_io)?;
         if !before.is_file() {

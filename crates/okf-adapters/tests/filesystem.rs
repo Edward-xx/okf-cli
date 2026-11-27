@@ -13,6 +13,50 @@ fn control() -> RequestControl {
     RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(false)))
 }
 
+#[test]
+fn dot_paths_are_excluded_from_scans_and_explicit_access() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join(".hidden")).unwrap();
+    fs::write(
+        root.path().join(".hidden/note.md"),
+        "---\ntype: Note\n---\n",
+    )
+    .unwrap();
+    fs::write(root.path().join(".note.md"), "---\ntype: Note\n---\n").unwrap();
+    fs::write(root.path().join("README.md"), "# documentation").unwrap();
+    let b = binding(root.path());
+    let c = control();
+    let entries = Filesystem
+        .list(&b, "", &mut ScanBudget::new(100, &c))
+        .unwrap();
+    assert_eq!(entries.entries.len(), 1);
+    for path in [".hidden/note.md", ".note.md"] {
+        assert!(Filesystem.stat(&b, path, &c).unwrap().is_none());
+        assert_eq!(
+            Filesystem.read(&b, path, 1024, &c).unwrap_err().code,
+            "NOT_FOUND"
+        );
+    }
+}
+
+#[test]
+fn resource_and_document_paths_require_exact_case() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("Folder")).unwrap();
+    fs::write(root.path().join("Folder/Note.md"), "---\ntype: Note\n---\n").unwrap();
+    let b = binding(root.path());
+    let c = control();
+    for path in ["folder/Note.md", "Folder/note.md"] {
+        assert!(Filesystem.stat(&b, path, &c).unwrap().is_none());
+        assert_eq!(
+            Filesystem.read(&b, path, 1024, &c).unwrap_err().code,
+            "NOT_FOUND"
+        );
+    }
+    assert!(Filesystem.stat(&b, "Folder/Note.md", &c).unwrap().is_some());
+    assert!(Filesystem.read(&b, "Folder/Note.md", 1024, &c).is_ok());
+}
+
 fn binding(root: &std::path::Path) -> BundleBinding {
     BundleBinding {
         id: "test-bundle".into(),

@@ -676,6 +676,9 @@ impl Git {
         path: &str,
         control: &RequestControl,
     ) -> Result<Option<(String, String, u64)>> {
+        if okf_core::excluded_path(path) {
+            return Ok(None);
+        }
         let spec = Self::spec(binding, path)?;
         let (commit, full) = spec.split_once(':').unwrap();
         let root = Path::new(&binding.root);
@@ -1392,6 +1395,9 @@ impl BundleReader for Git {
             let (header, name) = record
                 .split_once('\t')
                 .ok_or_else(|| Error::new("GIT_ERROR", "invalid tree record", 5))?;
+            if name.starts_with('.') {
+                continue;
+            }
             logical_path(name)?;
             let fields: Vec<_> = header.split_whitespace().collect();
             if fields.len() != 4 {

@@ -33,14 +33,7 @@ fn only_complete_current_events_contribute_to_trust() {
 
 #[test]
 fn unknown_content_update_time_cannot_imply_current_verification() {
-    for generated in [
-        "null",
-        "true",
-        "[]",
-        "{}",
-        "{by: agent/1}",
-        "{by: agent/1, at: nope}",
-    ] {
+    for generated in ["true", "{}", "{by: agent/1}", "{by: agent/1, at: nope}"] {
         let raw = format!("---\ntype: Note\ngenerated: {generated}\nverified: {{by: 'human:alice', at: '2026-11-21T00:00:00Z'}}\n---\n");
         let doc = Document::parse(&raw).unwrap();
         assert_eq!(doc.card("note", DateTime::UNIX_EPOCH).trust, "unverified");
@@ -48,5 +41,16 @@ fn unknown_content_update_time_cannot_imply_current_verification() {
             .diagnostics("note.md")
             .iter()
             .any(|d| d.code == "INDETERMINATE_VERIFICATION_TIME"));
+    }
+}
+
+#[test]
+fn empty_generated_family_is_absent_under_v03() {
+    for generated in ["null", "[]", "''"] {
+        let doc = Document::parse(&format!("---\ntype: Note\ngenerated: {generated}\nverified: {{by: 'human:alice', at: 2026-11-21}}\n---\n")).unwrap();
+        assert_eq!(
+            doc.card("note", DateTime::UNIX_EPOCH).trust,
+            "human-reviewed"
+        );
     }
 }

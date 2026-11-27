@@ -72,6 +72,168 @@ fn value(output: &Output) -> Value {
 }
 
 #[test]
+fn v03_compatibility_live_indexed_and_offline() {
+    let f = Fixture::new();
+    let root = f.work.path().join("knowledge");
+    fs::write(root.join("index.md"), "---\nokf_version: '0.3'\ntitle: Audit\ndescription: Bundle\nlicense: MIT\nx-extra: true\n---\n# Index\n").unwrap();
+    fs::write(root.join("README.md"), "# Ordinary documentation\n").unwrap();
+    fs::write(
+        root.join("services/README.md"),
+        "---\ntitle: Documentation\n---\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join(".hidden")).unwrap();
+    fs::write(root.join(".hidden/broken.md"), "---\ntype: [\n---\n").unwrap();
+    fs::write(
+        root.join("services/computation.md"),
+        include_str!("fixtures/v03/computation.md"),
+    )
+    .unwrap();
+    for (name, raw) in [
+        ("replacement.md", "---\ntype: Note\n---\nnew evidence\n"),
+        ("runner.md", "---\ntype: Tool\n---\nrun\n"),
+        ("query.sql", "SELECT 1"),
+        ("attest.py", "# no execution"),
+    ] {
+        fs::write(root.join("services").join(name), raw).unwrap();
+    }
+    f.bind();
+    for args in [
+        vec!["browse", "@book"],
+        vec!["browse", "@book/services"],
+        vec!["validate", "book"],
+        vec!["search", "Compatibility", "--bundle", "book"],
+        vec!["sync", "book"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    let checked = value(&f.run(&["validate", "book"]));
+    assert_eq!(checked["data"]["concepts"], 5);
+    assert!(checked["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["code"] != "MISSING_RESOURCE"
+            && d["code"] != "INVALID_TIMESTAMP"
+            && d["code"] != "INVALID_ACTOR"));
+    let live = value(&f.run(&["search", "Compatibility", "--bundle", "book"]));
+    assert_eq!(live["data"]["items"][0]["trust"], "machine-confirmed");
+    assert_eq!(live["data"]["items"][0]["tags"][0], "one,two");
+    let graph = value(&f.run(&[
+        "neighbors",
+        "@book/services/computation",
+        "--direction",
+        "outgoing",
+    ]));
+    let edges = graph["data"]["items"].as_array().unwrap();
+    for field in [
+        "/resource",
+        "/sources/resource",
+        "/executor/resource",
+        "/superseded_by",
+    ] {
+        assert!(
+            edges
+                .iter()
+                .any(|e| e["evidence"]["reference"]["field"] == field),
+            "{graph}"
+        );
+    }
+    assert!(edges
+        .iter()
+        .all(|e| e["to"] != "@book/services/README.md" && e["to"] != "@book/services/missing.md"));
+    assert!(graph["next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["target"] == "@book/services/replacement.md"));
+    fs::rename(&root, f.work.path().join("offline")).unwrap();
+    let out = f.run(&[
+        "neighbors",
+        "@book/services/computation",
+        "--direction",
+        "outgoing",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(value(&out)["data"]["items"], graph["data"]["items"]);
+    let read = f.run(&["read", "@book/README", "--indexed"]);
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&read.stdout)
+    );
+    assert!(value(&read)["data"]["document"]["concept_id"].is_null());
+}
+
+#[test]
+fn v03_versioned_resources_replacements_and_nonconcept_shadowing() {
+    for version in [None, Some("0.2"), Some("0.3"), Some("99.0")] {
+        let f = Fixture::new();
+        let root = f.work.path().join("knowledge");
+        fs::write(
+            root.join("index.md"),
+            version
+                .map(|v| format!("---\nokf_version: '{v}'\n---\n"))
+                .unwrap_or_default(),
+        )
+        .unwrap();
+        fs::write(root.join("services/old.md"), "---\ntype: Attested Computation\nstatus: deprecated\nsuperseded_by: new.md\ncomputation: query.sql\nruntime: sql\nattester: {resource: /attest.py}\nresource: shadow.md\n---\n").unwrap();
+        fs::write(
+            root.join("new.md"),
+            "---\ntype: Note\nstatus: deprecated\nsuperseded_by: /services/old.md\n---\n",
+        )
+        .unwrap();
+        fs::write(root.join("query.sql"), "SELECT 1").unwrap();
+        fs::write(root.join("attest.py"), "# attester").unwrap();
+        fs::write(root.join("shadow.md"), "---\ntype: Note\n---\n").unwrap();
+        fs::write(root.join("services/shadow.md"), "# not a concept\n").unwrap();
+        f.bind();
+        let validation = value(&f.run(&["validate", "book"]));
+        let legacy = version.is_none() || version == Some("0.2");
+        assert_eq!(
+            validation["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "MISSING_RESOURCE"),
+            !legacy,
+            "{validation}"
+        );
+        assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+        let graph = value(&f.run(&["neighbors", "@book/services/old", "--direction", "outgoing"]));
+        assert_eq!(
+            graph["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "SUPERSESSION_CYCLE"),
+            legacy,
+            "{graph}"
+        );
+        assert!(graph["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["to"] != "@book/shadow.md"));
+        assert_eq!(
+            graph["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "UNKNOWN_OKF_VERSION"),
+            version == Some("99.0")
+        );
+    }
+}
+
+#[test]
 fn multi_bundle_queries_share_budgets_and_isolate_missing_indexes() {
     let f = Fixture::new();
     for (name, count) in [("large", 5), ("small", 1), ("unsynced", 0)] {
@@ -368,7 +530,7 @@ fn warning_gate_distinguishes_complete_counts_from_truncation_and_scan_limits() 
         assert!(gate["warnings_total"].is_null());
         assert_eq!(gate["passed"], expected);
     }
-    fs::write(&path, "not a concept\n").unwrap();
+    fs::write(&path, "---\ntype: [\n---\n").unwrap();
     let invalid = f.run(&["validate", "book", "--max-warnings", "0"]);
     assert_eq!(invalid.status.code(), Some(1));
     assert!(value(&invalid)["data"]["quality_gate"]["passed"].is_null());
@@ -622,7 +784,7 @@ fn malformed_concept_is_diagnosed_and_requires_raw_read() {
     f.bind();
     fs::write(
         f.work.path().join("knowledge/services/bad.md"),
-        "# no frontmatter",
+        "---\ntype: [\n---\n",
     )
     .unwrap();
     let browse = value(&f.run(&["browse", "@book/services"]));
@@ -1086,7 +1248,7 @@ fn cache_failure_does_not_override_complete_validation_findings() {
     f.bind();
     fs::write(
         f.work.path().join("knowledge/services/bad.md"),
-        "# no frontmatter",
+        "---\ntype: [\n---\n",
     )
     .unwrap();
     fs::write(f.home.path().join("index.sqlite"), "corrupt cache").unwrap();
@@ -1110,7 +1272,7 @@ fn cache_failure_does_not_override_complete_validation_findings() {
 fn metadata_warnings_are_consistent_and_do_not_reduce_coverage() {
     let f = Fixture::new();
     f.bind();
-    let raw = "---\ntype: Future Concept\ntitle: Warning fixture\nverified: {by: 'human:reviewer', at: 'no timezone'}\nsources: [{id: scope, resource: 'all queries in project X', usage_count: -2}]\nstale_after: '2026-10-22'\nx-custom: {nested: [a, b]}\n---\nExact original body.\n";
+    let raw = "---\ntype: Future Concept\ntitle: Warning fixture\nverified: {by: 'human:reviewer', at: 'no timezone'}\nsources: [{id: scope, resource: 'all queries in project X', usage_count: -2}]\nstale_after: 'not-a-date'\nx-custom: {nested: [a, b]}\n---\nExact original body.\n";
     fs::write(f.work.path().join("knowledge/warning.md"), raw).unwrap();
     let mut expected = None;
     for args in [
@@ -1164,7 +1326,7 @@ fn metadata_warnings_coexist_with_structural_errors_and_partial_scans() {
     .unwrap();
     fs::write(
         f.work.path().join("knowledge/bad.md"),
-        "# missing frontmatter",
+        "---\ntype: [\n---\n",
     )
     .unwrap();
     let output = f.run(&["validate", "book"]);
@@ -1825,9 +1987,14 @@ fn indexed_neighbors_report_evidence_cycles_missing_targets_and_limits() {
     )
     .unwrap();
     let response = value(&f.run(&["neighbors", "@book/a"]));
-    assert_eq!(response["page"]["returned"], 4);
+    assert_eq!(response["page"]["returned"], 3);
     let edges = response["data"]["items"].as_array().unwrap();
-    assert!(edges.iter().any(|e| e["target_exists"] == false));
+    assert!(edges.iter().all(|e| e["target_exists"] == true));
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "NON_CONCEPT_TARGET"));
     assert!(edges
         .iter()
         .any(|e| e["evidence"]["reference"]["field"] == "/sources/0/resource"));

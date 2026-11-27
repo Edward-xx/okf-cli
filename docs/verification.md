@@ -12,6 +12,12 @@
 
 ## 验证入口
 
+v0.3 兼容实现对照的上游规范固定于 `527e81aff55992be21507e97004286789126f88c`。`cargo test -p okf-core --test compatibility` 覆盖分类、版本矩阵、回退边界、日期、Actor 和计算章节；`cargo test -p okf-cli --test cli v03_` 使用固定计算语料检查实时验证、索引、离线关系、非概念遮蔽和替代循环。原有 v0.2 固定语料保留，空值和纯日期的预期结果按 v0.3 消费规则更新。
+
+进一步实际测试使用 `python scripts/check_v03.py target/release/okf.exe --report target/verification/v03-cli.json`（已纳入交付入口）。它在隔离项目中创建文件系统和真实 Git 知识包，核对原文／哈希、版本矩阵、实时与索引结果、离线图、目录库存变化与损坏、来源描述、普通 Markdown 锚点、计算标题和路径大小写。报告保留每次 CLI 的参数、退出码、完整 JSON 响应及二进制 SHA-256，可复查实际执行结果。
+
+执行结果见 [最近验证](#最近验证)；格式与路径规则统一见 [兼容矩阵](cli-contract.md#版本兼容矩阵)。
+
 在仓库根目录执行基础检查：
 
 ```sh
@@ -81,7 +87,7 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 | 预算、分页、取消、输出上限 | [预算与分页](cli-contract.md#预算与分页)、[截止时间](cli-contract.md#截止时间与取消)、[JSON 响应](cli-contract.md#json-响应) | CLI 有界 JSON、Unicode cursor、应用请求控制回归 |
 | 文件路径与一致性 | [路径与一致性](architecture.md#路径与一致性) 说明观测视图、目录链接/Junction、大小写冲突和原文修订 | filesystem 适配器与 CLI 路径回归 |
 | 元数据筛选与有效期 | [搜索](cli-contract.md#搜索与生命周期)、[派生规则](cli-contract.md#派生与覆盖) 区分文本字段、筛选、请求时间与源文件声明 | 核心 metadata 固定样例、CLI 生命周期回归 |
-| 持久候选与旧库 | [候选检索](cli-contract.md#候选检索) 覆盖版本 2、行预算、容量回退、旧库重同步 | candidates 适配器回归、生产候选 32 组对照入口 |
+| 持久候选与旧库 | [候选检索](cli-contract.md#候选检索) 覆盖版本迁移、行预算、容量回退、旧库重同步 | candidates 适配器回归、生产候选 32 组对照入口 |
 | Git 凭据、SSH、LFS、子模块 | [Git](cli-contract.md#git-远端与缓存) 区分获取、离线读取、认证继承与配额范围 | Git Rust 回归、本地 HTTPS、LFS 完整性脚本；真实 SSH 服务仍未验收 |
 | OKF 元数据、链接、计算、附件、锚点 | [检查矩阵](cli-contract.md#okf-检查矩阵) 覆盖规则、诊断、位置、截断与可选检查 | 核心 metadata/computation/markdown 样例、sections 模块及 CLI 校验回归 |
 | 故障隔离与质量门槛 | [故障与覆盖](cli-contract.md#故障与覆盖)、[退出码](cli-contract.md#退出码) 区分部分结果、缓存故障、未知统计与门槛 | CLI 多包故障、缓存、warning gate 回归 |
@@ -136,7 +142,7 @@ python scripts/check_upstream.py target/verification/upstream.json --online
 
 ## 性能基线与兼容语料
 
-本节保存历史测量及复现方法。`baseline-windows.json` 未记录源码提交和完整环境信息，不作为当前源码的性能回归结论；当前字段值检索与候选派生版本 2 的成本需要重新测量。验证范围见 [验证记录](verification.md#最近验证)。
+本节保存历史测量及复现方法。`baseline-windows.json` 未记录源码提交和完整环境信息，不作为当前源码的性能回归结论；当前候选实现的成本需要重新测量。验证范围见 [验证记录](#最近验证)。
 
 `fixtures/upstream/manifest.json` 固定三个上游仓库的 commit、源路径与 SHA-256。共 65 份 Markdown，其中 44 份普通概念，另有目录索引等保留文件。原始许可与 NOTICE 随语料保留，`.gitattributes` 禁止 Git 改写其换行。
 
@@ -297,6 +303,14 @@ Windows 使用 `target/release/okf.exe`。输出目录必须不存在。脚本�
 未完成模型运行和评分前，答案质量指标保持未测量；脚本准备成功或确定性检索通过均不构成模型效果结论。
 
 ## 最近验证
+
+### 2026-11-27：OKF v0.3 兼容
+
+#40 工作区改动在 Windows GNU 上通过 Debug、Release 全工作区全目标测试各 146 项，fmt 和严格 Clippy 通过。Release 实际 CLI 专项通过 70 项检查、68 次命令调用，覆盖版本矩阵、目录遮蔽与目录语法、来源描述、普通 Markdown 锚点、计算标题及路径大小写。
+
+完整交付验收通过：45 个响应 Schema、索引检查、候选检索、真实 Git HTTPS/LFS、20 组跨包对照、128 个预算案例、12 个消费任务，以及解压包的 65 份固定上游文档、184 次 CLI 调用。日志位于 `target/review40-*-complete.log`，专项轨迹与二进制哈希位于 `target/verification/v03-cli.json`。本次未执行 Linux/macOS 实机验证，也不代表已发布二进制。
+
+同日文档同步与代码去重后，再次通过全量 Debug 146 项测试、fmt、严格 Clippy、重建 Release 的 70 项兼容检查（68 次调用）、45 个响应 Schema 和独立运行冒烟（含内嵌 Skill 安装核对）；189 个本地文档链接及锚点通过检查。日志为 `target/cleanup-*.log`，实际调用报告为 `target/verification/v03-cleanup.json`。此次未重复完整交付套件。
 
 ### 2026-11-26：审核时序修复（#39）
 

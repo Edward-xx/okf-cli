@@ -1,5 +1,58 @@
 use okf_adapters::SqliteIndex;
 use okf_application::{Index, IndexedDocument, Snapshot};
+
+#[test]
+fn v1_migration_preserves_raw_inventory_and_v2_classification_is_verified() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("content.sqlite");
+    let data = snapshot("old", "---\ntype: Note\n---\noriginal");
+    let sql = rusqlite::Connection::open(&path).unwrap();
+    sql.execute_batch("CREATE TABLE snapshots (bundle TEXT PRIMARY KEY,generation TEXT NOT NULL,revision TEXT,checked_at TEXT NOT NULL);
+        CREATE TABLE documents (bundle TEXT NOT NULL,path TEXT NOT NULL,hash TEXT NOT NULL,raw TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(bundle,path)); PRAGMA user_version=1;").unwrap();
+    sql.execute("INSERT INTO snapshots VALUES('book','old',NULL,'now')", [])
+        .unwrap();
+    let d = &data.documents[0];
+    sql.execute(
+        "INSERT INTO documents VALUES('book',?1,?2,?3,'old')",
+        rusqlite::params![d.path, d.hash, d.raw],
+    )
+    .unwrap();
+    assert!(okf_adapters::SqliteIndex::open_read_only(&path).is_err());
+    let index = okf_adapters::SqliteIndex::open(&path).unwrap();
+    assert_eq!(index.load("book").unwrap().unwrap().documents[0].raw, d.raw);
+    let mut updated = data.clone();
+    updated.documents.push(IndexedDocument {
+        path: "README.md".into(),
+        hash: okf_core::sha256(b"# docs"),
+        raw: "# docs".into(),
+    });
+    updated.generation = okf_application::index_generation(
+        None,
+        updated
+            .documents
+            .iter()
+            .map(|d| (d.path.as_str(), d.hash.as_str())),
+    )
+    .unwrap();
+    index.publish("book", Some("old"), &updated).unwrap();
+    assert_eq!(index.stats("book").unwrap().unwrap().concepts, 1);
+    assert_eq!(
+        index
+            .search("book", &updated.generation, 100)
+            .unwrap()
+            .unwrap()
+            .documents
+            .len(),
+        1
+    );
+    sql.execute("UPDATE documents SET concept=1 WHERE path='README.md'", [])
+        .unwrap();
+    let report = index.verify("book", 100, &control()).unwrap().unwrap();
+    assert!(report
+        .findings
+        .iter()
+        .any(|(_, e)| e.code == "INDEX_CLASSIFICATION_MISMATCH"));
+}
 fn control() -> okf_application::RequestControl {
     okf_application::RequestControl::new(
         std::time::Duration::from_secs(30),
@@ -96,6 +149,7 @@ fn verification_detects_corruption_bounds_coverage_and_preserves_storage() {
 }
 fn snapshot(generation: &str, raw: &str) -> Snapshot {
     Snapshot {
+        directories: Some(vec![]),
         generation: generation.into(),
         upstream_revision: None,
         checked_at: "2026-10-23T00:00:00Z".into(),
@@ -149,7 +203,12 @@ fn selective_reads_preserve_versions_and_do_not_load_unrelated_bodies() {
     let index = SqliteIndex::open(&path).unwrap();
     let mut data = snapshot("first", "---\ntype: Note\n---\n认证🙂");
     for path in ["index.md", "nested/log.md", "nested/Index.md", "z.md"] {
-        let raw = "---\ntype: Note\n---\nevidence".to_string();
+        let raw = if okf_core::reserved(path) {
+            "# Reserved document\n"
+        } else {
+            "---\ntype: Note\n---\nevidence"
+        }
+        .to_string();
         data.documents.push(IndexedDocument {
             path: path.into(),
             hash: okf_core::sha256(raw.as_bytes()),

@@ -28,7 +28,15 @@ cargo install --locked --path apps/okf-cli
 
 ## 下载与安装
 
-当前源码版本为 `v0.3.0`，修复 Git 传输安全、LFS 暂存配额与缺失路径诊断，详见 [release notes](release-notes-v0.3.0.txt)。正文数据库仍为 v1，候选派生数据仍为版本 2；从 `0.1.0` 升级的步骤见下文。不承诺任意版本间数据库兼容；升级前请备份运行目录。正式发布状态以 GitHub Releases 为准。
+当前 workspace 包版本为 `v0.3.0`；该版本发行说明见 [release notes](release-notes-v0.3.0.txt)。未发布源码包含 OKF v0.3 兼容改动，正文数据库升为 v2，候选派生数据升为版本 3；发行包能力以对应发行说明为准。不承诺任意版本间数据库兼容；升级前请备份运行目录。正式发布状态以 GitHub Releases 为准。
+
+### 未发布：v0.3 规范兼容升级
+
+升级到包含此改动的构建后，对每个知识包执行 `okf sync <名称>`。写入入口原子迁移旧正文数据库结构，保留原文，然后按当前文件分类与消费规则重建该包索引和候选数据。直接用只读命令打开旧 v1 库会返回 `INDEX_VERSION`；新结构中尚未重建的旧候选数据也会要求同步。源目录暂时离线时，应先恢复访问再同步；请保留旧版可执行文件和数据库备份以便继续使用旧快照。
+
+新索引保留非概念 Markdown 的原文和存在信息，但不将其当作搜索候选或概念图节点。CLI 包版本不表示其支持的 OKF 规范版本；兼容规则见 [版本矩阵](cli-contract.md#版本兼容矩阵)。
+
+v2 快照还记录目录库存，以保证离线回退不会越过实际存在的目录。早期开发构建生成的 v2 快照没有该字段时，原文仍可读取；依赖旧版路径回退的图导航会提示 `INDEX_INVENTORY_MISSING`，重新 `sync` 后恢复。
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
@@ -44,9 +52,9 @@ cargo install --locked --path apps/okf-cli
 
 ## 未发布：审核等级修复
 
-当前工作区已修复 [#39](https://github.com/coolplayagent/okf-cli/issues/39)：历史审核以及缺少或具有非法时间的事件不再提升审核等级，筛选结果可能因此减少。具体规则与诊断见 [派生与覆盖](cli-contract.md#派生与覆盖)。该修复尚未发布，包版本 `0.3.0` 不代表完整 OKF v0.3 格式兼容。
+当前工作区已修复 [#39](https://github.com/coolplayagent/okf-cli/issues/39)：历史审核以及缺少或具有非法时间的事件不再提升审核等级，筛选结果可能因此减少。具体规则与诊断见 [派生与覆盖](cli-contract.md#派生与覆盖)。该修复尚未发布。
 
-正文索引保存原文，候选索引保存完整 frontmatter，查询时重新派生等级；倒排词项不含审核等级。本次升级无需重建索引，也不改变数据库版本或 generation。旧二进制生成的索引已由新版离线读取验证，证据见 [最近验证](verification.md#最近验证)。
+正文索引保存原文，候选索引保存完整 frontmatter，查询时重新派生等级；倒排词项不含审核等级。单独的审核修复不要求重建索引，但当前源码同时包含上述 v0.3 规范兼容改动，升级时仍须逐包 `sync`。
 
 ## 0.2.0 升级注意事项
 

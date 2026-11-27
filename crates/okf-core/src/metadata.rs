@@ -54,6 +54,19 @@ pub(crate) fn trust_tier(frontmatter: &Map<String, Value>) -> &'static str {
 }
 
 pub(crate) fn timestamp(value: &str) -> Option<DateTime<FixedOffset>> {
+    if value.len() == 10
+        && value.as_bytes()[4] == b'-'
+        && value.as_bytes()[7] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| matches!(i, 4 | 7) || b.is_ascii_digit())
+    {
+        return chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc().fixed_offset());
+    }
     if !timestamp_shape(value) {
         return None;
     }
@@ -139,10 +152,12 @@ fn timestamp_shape(value: &str) -> bool {
 }
 
 pub(crate) fn valid_actor(value: &str) -> bool {
-    ["human:", "process:"].iter().any(|prefix| {
-        value
-            .strip_prefix(prefix)
-            .is_some_and(|id| !id.trim().is_empty())
+    value.split_once(':').is_some_and(|(scheme, id)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
+            && !id.trim().is_empty()
     }) || value.split_once('/').is_some_and(|(producer, version)| {
         !producer.trim().is_empty() && !version.trim().is_empty()
     })
@@ -172,11 +187,7 @@ impl Check {
                         self.string(parameter.get(name), &format!("{field}/{name}"), true);
                     }
                     match parameter.get("required") {
-                        None => self.warn(
-                            "MISSING_METADATA_FIELD",
-                            &format!("{field}/required"),
-                            "parameter must declare whether it is required",
-                        ),
+                        None => {}
                         Some(value) if !value.is_boolean() => self.warn(
                             "INVALID_METADATA_TYPE",
                             &format!("{field}/required"),
@@ -299,7 +310,7 @@ impl Check {
                 self.warn(
                     "INVALID_ACTOR",
                     field,
-                    "expected human:<id>, process:<id>, or <producer>/<version>",
+                    "expected <scheme>:<id> or <producer>/<version>",
                 );
             }
         }
@@ -399,6 +410,16 @@ impl Check {
 }
 
 pub(crate) fn diagnostics(frontmatter: &Map<String, Value>, path: &str) -> Vec<Diagnostic> {
+    let single_fields: Vec<_> = ["tags", "sources", "parameters"]
+        .into_iter()
+        .filter(|key| {
+            frontmatter
+                .get(*key)
+                .is_some_and(|v| crate::present(v) && !v.is_array())
+        })
+        .collect();
+    let normalized = crate::compatibility::normalized(frontmatter);
+    let frontmatter = &normalized;
     let mut check = Check { warnings: vec![] };
     for name in ["title", "description", "resource"] {
         check.string(frontmatter.get(name), &format!("/{name}"), false);
@@ -466,25 +487,37 @@ pub(crate) fn diagnostics(frontmatter: &Map<String, Value>, path: &str) -> Vec<D
     }
     for warning in &mut check.warnings {
         warning.path = Some(path.into());
+        if let Some(field) = &mut warning.field {
+            for key in &single_fields {
+                let prefix = format!("/{key}/0");
+                if field == &prefix || field.starts_with(&format!("{prefix}/")) {
+                    *field = field.replacen(&prefix, &format!("/{key}"), 1);
+                }
+            }
+        }
     }
     check.warnings
 }
 
 /// Structural checks for OKF reserved resources; optional concept guidance is separate.
 pub fn validate_reserved(path: &str, raw: &str) -> Result<()> {
-    if path.ends_with("index.md") && raw.trim_start_matches('\u{feff}').starts_with("---") {
-        let (fm, _) = crate::frontmatter(raw)?;
-        if path != "index.md" || fm.keys().any(|key| key != "okf_version") {
+    if !crate::reserved(path) {
+        return Ok(());
+    }
+    if crate::has_frontmatter(raw) {
+        crate::frontmatter(raw)?;
+        if path != "index.md" {
             return Err(Error::new(
                 "INVALID_OKF",
-                "index frontmatter is only allowed at root with okf_version",
+                "frontmatter is only allowed in the bundle-root index.md among reserved files",
                 1,
             ));
         }
     }
     if path.ends_with("log.md") {
         for line in raw.lines().filter_map(|line| line.strip_prefix("## ")) {
-            if chrono::NaiveDate::parse_from_str(line.trim(), "%Y-%m-%d").is_err() {
+            let date = line.trim();
+            if date.len() != 10 || chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
                 return Err(Error::new(
                     "INVALID_OKF",
                     "log date headings must be YYYY-MM-DD",

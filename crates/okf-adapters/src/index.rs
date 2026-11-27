@@ -1,6 +1,6 @@
 use okf_application::{
-    index_generation, Index, IndexStats, IndexVerification, IndexedDocument, RequestControl,
-    Snapshot, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
+    inventory_generation, Index, IndexStats, IndexVerification, IndexedDocument, RequestControl,
+    Snapshot, MAX_DIRECTORY_BYTES, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
 };
 use okf_core::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -27,10 +27,10 @@ impl SqliteIndex {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(Error::io)?;
-        if version != 1 {
+        if version != 2 {
             return Err(Error::new(
                 "INDEX_VERSION",
-                "unsupported content index schema",
+                "content index requires sync with this CLI version",
                 2,
             ));
         }
@@ -48,17 +48,27 @@ impl SqliteIndex {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(Error::io)?;
-        if version != 0 && version != 1 {
+        if !matches!(version, 0..=2) {
             return Err(Error::new(
                 "INDEX_VERSION",
                 "unsupported content index schema",
                 2,
             ));
         }
+        if version == 1 {
+            connection.execute_batch("BEGIN IMMEDIATE; ALTER TABLE documents ADD COLUMN concept INTEGER NOT NULL DEFAULT 1;
+                UPDATE documents SET concept=0 WHERE path IN ('index.md','log.md') OR substr(path,-9)='/index.md' OR substr(path,-7)='/log.md';
+                PRAGMA user_version=2; COMMIT;").map_err(Error::io)?;
+        }
         connection.execute_batch("PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS snapshots (bundle TEXT PRIMARY KEY, generation TEXT NOT NULL, revision TEXT, checked_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS documents (bundle TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, raw TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(bundle,path));
-            PRAGMA user_version=1;").map_err(Error::io)?;
+            CREATE TABLE IF NOT EXISTS snapshots (bundle TEXT PRIMARY KEY, generation TEXT NOT NULL, revision TEXT, checked_at TEXT NOT NULL, directories TEXT);
+            CREATE TABLE IF NOT EXISTS documents (bundle TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, raw TEXT NOT NULL, generation TEXT NOT NULL, concept INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(bundle,path));
+            PRAGMA user_version=2;").map_err(Error::io)?;
+        if !has_directories(&connection)? {
+            connection
+                .execute_batch("ALTER TABLE snapshots ADD COLUMN directories TEXT;")
+                .map_err(Error::io)?;
+        }
         connection
             .execute_batch(candidates::SCHEMA)
             .map_err(Error::io)?;
@@ -66,7 +76,57 @@ impl SqliteIndex {
     }
 }
 // Exact, case-sensitive reserved filenames, matching okf_core::reserved.
-const CONCEPT: &str = "path NOT IN ('index.md','log.md') AND substr(path,-9)<>'/index.md' AND substr(path,-7)<>'/log.md'";
+const CONCEPT: &str = "concept=1 AND path NOT IN ('index.md','log.md') AND substr(path,-9)<>'/index.md' AND substr(path,-7)<>'/log.md'";
+
+fn has_directories(connection: &Connection) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('snapshots') WHERE name='directories')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(Error::io)
+}
+
+fn directory_inventory(tx: &Transaction<'_>, key: &str) -> Result<Option<Vec<String>>> {
+    if !has_directories(tx)? {
+        return Ok(None);
+    }
+    let (bytes, raw): (Option<usize>, Option<String>) = tx.query_row(
+        "SELECT length(CAST(directories AS BLOB)),CASE WHEN length(CAST(directories AS BLOB))<=?2 THEN directories ELSE NULL END FROM snapshots WHERE bundle=?1",
+        params![key, MAX_DIRECTORY_BYTES], |r| Ok((r.get(0)?, r.get(1)?))).map_err(Error::io)?;
+    if bytes.is_some_and(|n| n > MAX_DIRECTORY_BYTES) {
+        return Err(Error::new(
+            "INDEX_LIMIT",
+            "directory inventory exceeds byte budget",
+            7,
+        ));
+    }
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let directories: Vec<String> = serde_json::from_str(&raw)
+        .map_err(|_| Error::new("INDEX_CORRUPT", "invalid directory inventory", 5))?;
+    if directories.len() > MAX_INDEX_DOCUMENTS {
+        return Err(Error::new(
+            "INDEX_LIMIT",
+            "directory inventory exceeds count budget",
+            7,
+        ));
+    }
+    if directories
+        .iter()
+        .any(|p| p.is_empty() || okf_core::logical_path(p).is_err() || okf_core::excluded_path(p))
+        || directories.windows(2).any(|p| p[0] >= p[1])
+    {
+        return Err(Error::new(
+            "INDEX_CORRUPT",
+            "invalid or unordered directory inventory",
+            5,
+        ));
+    }
+    Ok(Some(directories))
+}
 
 fn header(tx: &Transaction<'_>, key: &str) -> Result<Option<IndexStats>> {
     let header: Option<(String, Option<String>, String)> = tx
@@ -211,6 +271,11 @@ impl SqliteIndex {
             upstream_revision: header.upstream_revision,
             checked_at: header.checked_at,
             documents,
+            directories: if path.is_none() && expected.is_none() {
+                directory_inventory(&tx, key)?
+            } else {
+                None
+            },
         }))
     }
 }
@@ -262,7 +327,7 @@ impl Index for SqliteIndex {
         let mut statement = tx
             .prepare(
                 "SELECT path,hash,generation,length(CAST(raw AS BLOB)),
-            CASE WHEN length(CAST(raw AS BLOB))<=2097152 THEN raw ELSE NULL END
+            CASE WHEN length(CAST(raw AS BLOB))<=2097152 THEN raw ELSE NULL END,concept
             FROM documents WHERE bundle=?1 ORDER BY path LIMIT ?2",
             )
             .map_err(Error::io)?;
@@ -290,6 +355,7 @@ impl Index for SqliteIndex {
                 break;
             }
             let raw: Option<String> = row.get(4).map_err(Error::io)?;
+            let stored_concept: bool = row.get(5).map_err(Error::io)?;
             report.documents_checked += 1;
             report.bytes_checked += bytes;
             let mut finding = |code, message| {
@@ -315,20 +381,32 @@ impl Index for SqliteIndex {
                     "stored content hash mismatch; run sync to rebuild",
                 ),
                 None => finding("INDEX_DOCUMENT_LIMIT", "stored document exceeds 2 MiB"),
-                Some(raw) if check_candidates => {
-                    if let Err(error) = candidates::verify_document(&tx, key, &path, &raw, &hash) {
-                        finding("INDEX_CANDIDATES_CORRUPT", &error.message);
+                Some(raw) => {
+                    match okf_core::classify(&path, &raw) {
+                        Ok(doc) if doc.is_some() == stored_concept => {}
+                        _ => finding(
+                            "INDEX_CLASSIFICATION_MISMATCH",
+                            "stored concept classification differs from content; run sync",
+                        ),
+                    }
+                    if check_candidates {
+                        if let Err(error) =
+                            candidates::verify_document(&tx, key, &path, &raw, &hash)
+                        {
+                            finding("INDEX_CANDIDATES_CORRUPT", &error.message);
+                        }
                     }
                 }
-                _ => {}
             }
             entries.push((path, hash));
         }
         report.complete = report.interruption.is_none() && report.documents_checked == total;
         if report.complete {
-            let generation = index_generation(
+            let directories = directory_inventory(&tx, key)?;
+            let generation = inventory_generation(
                 header.upstream_revision.as_deref(),
                 entries.iter().map(|(p, h)| (p.as_str(), h.as_str())),
+                directories.as_deref().unwrap_or_default(),
             )?;
             if generation != header.generation {
                 report.failures += 1;
@@ -428,14 +506,31 @@ impl Index for SqliteIndex {
         for doc in &snapshot.documents {
             control.check()?;
             tx.execute(
-                "INSERT INTO documents(bundle,path,hash,raw,generation) VALUES(?1,?2,?3,?4,?5)",
-                params![key, doc.path, doc.hash, doc.raw, snapshot.generation],
+                "INSERT INTO documents(bundle,path,hash,raw,generation,concept) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![key, doc.path, doc.hash, doc.raw, snapshot.generation, okf_core::classify(&doc.path, &doc.raw)?.is_some()],
             )
             .map_err(Error::io)?;
         }
-        tx.execute("INSERT INTO snapshots(bundle,generation,revision,checked_at) VALUES(?1,?2,?3,?4)
-            ON CONFLICT(bundle) DO UPDATE SET generation=excluded.generation,revision=excluded.revision,checked_at=excluded.checked_at",
-            params![key,snapshot.generation,snapshot.upstream_revision,snapshot.checked_at]).map_err(Error::io)?;
+        let directories = snapshot
+            .directories
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(Error::io)?;
+        if directories
+            .as_ref()
+            .is_some_and(|s| s.len() > MAX_DIRECTORY_BYTES)
+        {
+            return Err(Error::new(
+                "INDEX_LIMIT",
+                "directory inventory exceeds byte budget",
+                7,
+            ));
+        }
+        tx.execute("INSERT INTO snapshots(bundle,generation,revision,checked_at,directories) VALUES(?1,?2,?3,?4,?5)
+            ON CONFLICT(bundle) DO UPDATE SET generation=excluded.generation,revision=excluded.revision,checked_at=excluded.checked_at,directories=excluded.directories",
+            params![key,snapshot.generation,snapshot.upstream_revision,snapshot.checked_at,directories]).map_err(Error::io)?;
+        directory_inventory(&tx, key)?;
         candidates::publish(&tx, key, snapshot, control)?;
         control.check()?;
         tx.commit().map_err(Error::io)
