@@ -11,6 +11,45 @@ use std::{
 fn control() -> RequestControl {
     RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(false)))
 }
+
+#[test]
+fn dense_postings_leave_budget_for_original_evidence() {
+    let home = tempfile::tempdir().unwrap();
+    let index = SqliteIndex::open(&home.path().join("content.sqlite")).unwrap();
+    let entries: Vec<_> = (0..20)
+        .map(|i| (format!("{i:02}.md"), "---\ntype: Note\n---\nsharedterm"))
+        .collect();
+    let borrowed: Vec<_> = entries
+        .iter()
+        .map(|(path, raw)| (path.as_str(), *raw))
+        .collect();
+    let data = snapshot(&borrowed);
+    index.publish("book", None, &data).unwrap();
+    let terms = vec!["sharedterm".into()];
+    let filter = SearchFilter::default();
+    let control = control();
+    for row_limit in [2, 4, 10, 20] {
+        let selected = index
+            .candidates(
+                "book",
+                &CandidateRequest {
+                    generation: &data.generation,
+                    terms: &terms,
+                    filter: &filter,
+                    evaluated_at: chrono::DateTime::UNIX_EPOCH,
+                    body_limit: 1,
+                    row_limit,
+                    control: &control,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!selected.complete);
+        assert!(selected.rows_read <= row_limit);
+        assert_eq!(selected.snapshot.documents.len(), 1);
+        assert_eq!(selected.snapshot.documents[0].hash, data.documents[0].hash);
+    }
+}
 fn snapshot(entries: &[(&str, &str)]) -> Snapshot {
     let documents: Vec<_> = entries
         .iter()
@@ -31,6 +70,40 @@ fn snapshot(entries: &[(&str, &str)]) -> Snapshot {
         checked_at: "2030-01-01T00:00:00Z".into(),
         documents,
     }
+}
+
+#[test]
+fn truncated_later_posting_does_not_discard_known_tail_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    let index = SqliteIndex::open(&home.path().join("content.sqlite")).unwrap();
+    let data = snapshot(&[
+        ("a.md", "---\ntype: Note\n---\nxyz"),
+        ("b.md", "---\ntype: Note\n---\nxyz"),
+        ("z.md", "---\ntype: Note\n---\nabc xyz"),
+    ]);
+    index.publish("book", None, &data).unwrap();
+    let terms = vec!["abc".into(), "xyz".into()];
+    let filter = SearchFilter::default();
+    let control = control();
+    let selected = index
+        .candidates(
+            "book",
+            &CandidateRequest {
+                generation: &data.generation,
+                terms: &terms,
+                filter: &filter,
+                evaluated_at: chrono::DateTime::UNIX_EPOCH,
+                body_limit: 1,
+                row_limit: 6,
+                control: &control,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!selected.complete);
+    assert!(selected.rows_read <= 6);
+    assert_eq!(selected.snapshot.documents.len(), 1);
+    assert_eq!(selected.snapshot.documents[0].path, "z.md");
 }
 
 #[test]

@@ -486,11 +486,24 @@ impl App<'_> {
         let mut scanned = 0;
         let bundle_count = available.len();
         let mut candidate_rows = 0;
+        let mut unused_bodies = 0;
+        let mut unused_rows = 0;
         for (position, ((binding, stats), quota)) in available.into_iter().zip(quotas).enumerate() {
             let name = &binding.name;
+            // Preserve each bundle's initial fair share. Transfer only unused
+            // work to later bundles in canonical alias order, without rescanning.
+            let quota = if filter.candidate_budget.is_some() {
+                let limit = (quota + unused_bodies).min(stats.concepts);
+                unused_bodies = quota + unused_bodies - limit;
+                limit
+            } else {
+                quota
+            };
             let row_quota = filter
                 .candidate_budget
-                .map(|n| n / bundle_count + usize::from(position < n % bundle_count));
+                .map(|n| n / bundle_count + usize::from(position < n % bundle_count) + unused_rows);
+            // A failed adapter call may already have spent its allowance.
+            unused_rows = 0;
             let mut candidate_complete = None;
             let mut bundle_candidate_rows = 0;
             let result = self
@@ -542,6 +555,10 @@ impl App<'_> {
                     continue;
                 }
             };
+            if let Some(row_limit) = row_quota {
+                unused_rows = row_limit.saturating_sub(bundle_candidate_rows);
+                unused_bodies += quota.saturating_sub(snapshot.documents.len());
+            }
             if single {
                 response.data["generation"] = json!(snapshot.generation);
             } else {

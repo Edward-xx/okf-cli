@@ -196,12 +196,15 @@ pub(super) fn select(
     }
     let (lower, upper) = directory_bounds(request.filter.directory.as_deref())?;
     let mut rows_read = 0;
+    // Reserve one metadata read per enumerated path. Otherwise a dense posting
+    // list can consume the entire budget before any evidence is inspected.
+    let enumeration_limit = request.row_limit / 2;
     let mut complete = true;
     let tokens: BTreeSet<_> = request.terms.iter().flat_map(|t| trigrams(t)).collect();
     let mut paths: Option<BTreeSet<String>> = None;
     for token in &tokens {
         request.control.check()?;
-        let remaining = request.row_limit.saturating_sub(rows_read);
+        let remaining = enumeration_limit.saturating_sub(rows_read);
         if remaining == 0 {
             complete = false;
             break;
@@ -219,6 +222,9 @@ pub(super) fn select(
             complete = false;
         }
         paths = Some(match paths {
+            // An incomplete posting prefix cannot prove that a previously
+            // selected path is absent. Keep that superset for raw verification.
+            Some(paths) if !complete => paths,
             Some(paths) => paths.intersection(&selected).cloned().collect(),
             None => selected,
         });
@@ -228,7 +234,7 @@ pub(super) fn select(
     }
     let mut paths = paths.unwrap_or_default();
     // Overflow documents are always included; short queries scan candidate metadata.
-    let remaining = request.row_limit.saturating_sub(rows_read);
+    let remaining = enumeration_limit.saturating_sub(rows_read);
     if remaining == 0 {
         complete = false;
     } else {

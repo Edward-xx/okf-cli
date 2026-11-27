@@ -36,6 +36,7 @@ jobs:
             target/verification/retrieval.json
             target/verification/multi-bundle.json
             target/verification/budgets.json
+            target/verification/budget-strategies.json
             target/verification/consumption.json
             target/verification/candidates.json
             target/verification/index-candidates.json

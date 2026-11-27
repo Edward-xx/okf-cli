@@ -43,7 +43,7 @@ Git 测试需要 Git；HTTPS 脚本使用本地 TLS 服务。交付验收不访�
 | 审核时序 | `cargo test -p okf-core --test verification`、`cargo test -p okf-cli --test cli current_verification` | 时间边界、无效字段、混合事件，以及实时、索引、候选和离线筛选的一致性 |
 | 响应契约 | `scripts/check_schema.py`（包含 `check_search_schema.py`） | 元数据搜索、全文搜索与正文上下文的卡片、来源、索引版本和片段结构；覆盖空结果、部分结果、候选策略及多包，另核对实际片段的原文字节、哈希与 generation；包含隔离的合成反例，不代表每个业务字段均有完整 Schema |
 | 索引与目录范围 | `scripts/check_index.py`、`scripts/check_scope.py` | 完整性、修复、离线读取与目录范围隔离 |
-| 候选检索 | `scripts/evaluate_index_candidates.py` | 实际 CLI 与路径扫描结果对照、预算、损坏、兼容和重同步 |
+| 候选检索 | `scripts/evaluate_index_candidates.py`、`evaluate_budget_strategies.py` | 完整结果一致性、有限预算召回与来源覆盖、损坏、兼容和重同步 |
 | Git 传输与缓存 | `scripts/check_git_https.py`、`scripts/check_git_integrity.py` | 本地真实 HTTPS 传输、凭据隔离、失败恢复、子模块和 LFS 完整性 |
 | 检索与消费 | `scripts/evaluate.py`、`evaluate_multi_bundle.py`、`evaluate_budgets.py`、`evaluate_consumption.py` | 固定任务证据、覆盖和调用轨迹；不测量模型答案质量 |
 | Agent 评测准备 | `scripts/check_agent_preparation.py` | 隔离项目、盲测任务和拒绝覆盖；不调用模型 |
@@ -254,6 +254,35 @@ python scripts/evaluate_candidates.py target/verification/candidates.json --scal
 
 该脚本保留为独立算法实验；实际 CLI 的候选实现及完整性、兼容和修复行为由下述生产对照验证。
 
+### 有限预算策略对照
+
+有限预算策略的统一对照入口：
+
+```sh
+python scripts/evaluate_budget_strategies.py target/release/okf target/verification/budget-strategies.json
+# 可选：在完全相同的语料、查询和预算上运行修改前的二进制
+python scripts/evaluate_budget_strategies.py target/release/okf target/verification/budget-strategies.json --baseline-binary /path/to/previous/okf
+```
+
+该评测使用 3、8、60 份文档的离线知识包，对 `search` 和 `context` 比较路径扫描与候选扫描。九个任务覆盖末尾证据、稀疏标签、重复来源、中文长词、两字短词、自然语言、跨语言、密集候选及无答案；另有跨包剩余额度回收案例。自然语言任务的相关证据由语料人工标注，不能把字面匹配的零结果当作语义召回成功。报告固定语料、评测脚本和二进制的 SHA-256，记录每个构建的同步耗时、数据库体积和表行数，以及逐查询的正文数、候选行数、召回、来源覆盖、覆盖状态、耗时与采样 RSS。原文哈希、片段字节、generation、预算及反向包选择顺序均有断言。
+
+质量门槛：正文预算 10、候选行预算 256 时找齐末尾和中文长词证据；正文预算 3、候选行预算 24 时密集查询保留三个独立来源；充足预算下所有字面任务找齐预期证据；额度回收案例在正文预算 2 下找到大包的两份证据。自然语言、短词和其他紧预算案例记录退化，不伪装为全召回保证。CI 通过 `check_delivery.py` 运行并保存 `budget-strategies.json`，没有机器相关的耗时门槛。
+
+默认仍保留路径扫描：短词回退、单向额度回收和字面匹配的局限尚不足以支持无条件启用候选策略。预算分配、计量及覆盖规则见 [候选检索](cli-contract.md#候选检索)。稀有三元组排序、词法排序和查询改写留作独立实验。
+
+2026-11-27 Windows 对照 `3c1570d` 与预算优化构建，共 218 条记录通过，报告保存为 `target/verification/issue42-before-after.json`。语料 SHA-256 为 `a084831f2158e921d805c38060ecbab436feda312444afad35fc35411f5caa14`；旧/新二进制 SHA-256 前缀分别为 `7a5240b92b17`、`a4a9d264fb5a`。两种消费模式结果一致，下表记录候选策略在相同上限下的变化：
+
+| 任务 | 正文/候选行上限 | 修改前召回 | 修改后召回 | 候选行实读（前→后） |
+| --- | --- | --- | --- | --- |
+| 末尾证据 | 10 / 256 | 1/3 | 3/3 | 120 → 126 |
+| 稀疏标签 | 10 / 256 | 1/3 | 3/3 | 184 → 237 |
+| 中文长词 | 3 / 24 | 2/3 | 3/3 | 9 → 9 |
+| 密集候选 | 3 / 24 | 0/71（0 个来源） | 3/71（3 个来源） | 24 → 20 |
+
+两包额度回收案例在正文/候选行上限 2/128 下，由零结果变为两份末尾证据，候选行从 71 降为 69；仍报告部分覆盖。退化及边界：`late-evidence` 在 3/24 下仍零召回，新实现会额外读取三份最终不匹配的正文；短词 `认证` 在完整扫描时仍需 71 份正文及 142 条候选记录，默认扫描只需 71 份正文；自然语言和跨语言问题的相关证据召回仍为零。所有默认路径扫描的结果、预算和覆盖状态在新旧构建间一致。
+
+两构建索引均为 708608 字节、3050 条倒排记录，无新增索引结构；三包同步总耗时单次观测约 601/574 ms。耗时含进程启动且未做统计重复，不作为加速结论。部分收益来自更充分消费既有额度，正文和候选实读数可能同时增加，不能宣称等实际工作量优化。
+
 ### 生产候选检索对照
 
 ```sh
@@ -333,6 +362,20 @@ Debug、Release 各 146 项 Rust 测试、fmt、严格 Clippy 及新 Release 构
 日志与 JSON/JSONL 证据位于 `target/verification/issue41/full/`、`actual/`、`official-fs/`、`official-git/`、`official-git-fixed/` 和 `https-retry/`，汇总为 `target/verification/issue41/summary.json`。这些为本地生成产物；不替代 Linux/macOS、Windows MSVC 或 GitHub 托管工作流的验收。
 
 同日清理后，下载器复用监测的 GitHub JSON 请求函数，移除单来源循环与重复初始化；两项原支持测试迁入上游专项。当前上游专项 15 项、支持测试 6 项、官方运行器 6 项通过，上游专项另通过优化 Python 模式。真实联网、断网、快照损坏及下载字节一致性复测通过，148 个本地文档链接与锚点检查通过。增量证据位于 `target/verification/issue41/cleanup/`；此次未重复完整 Rust 与交付套件。
+
+### 2026-11-27：有限预算检索全面实测（#42）
+
+预算优化构建在 Windows GNU 上通过 Debug、Release 全工作区全目标测试各 148 项，以及 fmt、严格 Clippy、发布聚合 8 项、官方语料运行器 6 项和候选原型 24 个场景。实测二进制 SHA-256 为 `8eb238be5e14a79d55bc031ff262a9d10afb17cecb8059a15b7159389262f0d2`；以下为该构建的验证记录。
+
+交付首轮在 HTTPS 子模块存储配额场景触发 15 秒外层超时；其他 Git 测试结束后，保持原时限单独复测通过，Git/LFS 完整性及所有后续步骤也补跑通过。包括 128 个预算案例、109 条当前策略记录和解压包独立验收（82 份文档、221 次调用）。首轮失败日志保留，本轮并非整套脚本一次性通过。
+
+额外 384 次 CLI 调用通过：144 个固定种子的预算边界组合覆盖零/奇数候选预算、空包、缺失索引、筛选、Unicode、短词及超大文档回退，并核对预算、覆盖与原文证据。官方四包的 8 组完整候选结果与路径扫描一致，另记录 24 个受限预算场景。别名排序实测中，同一证据包排在后面返回三份证据，改名排在前面返回两份；同预算及部分覆盖语义保持正确。
+
+官方固定提交 `527e81aff55992be21507e97004286789126f88c` 的四包文件系统验收通过（78 份文档、225 项检查、429 次调用）；公网 HTTPS Git 的 GA4 验收通过（14 份文档、48 项检查、129 次调用），含分页、失败刷新及脱离 Git 对象库的离线读取。1000 份干扰文档对照中，`late-evidence` 从 1001 份正文降至 1 份正文及 12 条候选记录；数据库为 10067968 字节、47076 条倒排记录。这不代表等实际工作量或稳定耗时加速。
+
+汇总为 `target/verification/issue42-verification-summary.json`；完整调用轨迹在 `issue42-actual/`、`issue42-official-fs/` 和 `issue42-official-git/`，首轮交付日志为 `full-delivery.log`，原时限复测日志为 `issue42-https-retry.log`。实测脚本保存在 `target/verification/issue42_actual.py`。这些本地产物不替代 Linux/macOS、Windows MSVC 或 GitHub 托管工作流验收。
+
+同日清理文档与评测脚本后，复用证据校验并补齐额度回收案例的校验；218 条新旧构建对照再次通过，证据、预算和覆盖结果与清理前一致。174 个本地文档链接与锚点通过检查。报告为 `target/verification/issue42-cleanup-strategies.json`；本次清理未改生产算法，未重复完整 Rust 与交付套件。
 
 ### 2026-11-27：OKF v0.3 兼容
 
