@@ -25,6 +25,7 @@ subprocess.run([sys.executable, str(root / 'scripts/check_git_integrity.py'), st
 subprocess.run([sys.executable, str(root / 'scripts/evaluate.py'), str(binary), str(root / 'target/verification/retrieval.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_multi_bundle.py'), str(binary), str(root / 'target/verification/multi-bundle.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_budgets.py'), str(binary), str(root / 'target/verification/budgets.json')], check=True)
+subprocess.run([sys.executable, str(root / 'scripts/evaluate_budget_strategies.py'), str(binary), str(root / 'target/verification/budget-strategies.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_consumption.py'), str(binary), str(root / 'target/verification/consumption.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_agent_preparation.py'), str(binary)], check=True)
 package_args = ['--tag', args.tag] if args.tag else []
