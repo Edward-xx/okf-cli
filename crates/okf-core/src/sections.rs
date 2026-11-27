@@ -250,7 +250,7 @@ fn decode_html_entities(value: &str) -> String {
         let tail = &rest[pos..];
         let Some(end) = tail.find(';') else {
             out.push_str(tail);
-            break;
+            return out;
         };
         let body = &tail[1..end];
         let decoded = match body {
@@ -361,6 +361,35 @@ mod tests {
             Sections::parse("# A\n<a id='custom'></a>", 0).contains_anchor("missing"),
             None
         );
+    }
+
+    #[test]
+    fn html_anchor_values_preserve_literal_ampersands() {
+        for (value, expected) in [
+            ("foo&bar", "foo&bar"),
+            ("foo&", "foo&"),
+            ("&", "&"),
+            ("a&amp;b&tail", "a&b&tail"),
+            ("a&unknown;b&tail", "a&unknown;b&tail"),
+            ("中文&尾", "中文&尾"),
+        ] {
+            for attribute in ["id", "name"] {
+                for quoted in [
+                    format!("'{value}'"),
+                    format!("\"{value}\""),
+                    value.to_owned(),
+                ] {
+                    let html = format!("<a {attribute}={quoted}></a>");
+                    let sections = Sections::parse(&html, 0);
+                    assert_eq!(sections.contains_anchor(expected), Some(true), "{html}");
+                    assert_ne!(
+                        sections.contains_anchor(&format!("{expected}{value}")),
+                        Some(true),
+                        "{html}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

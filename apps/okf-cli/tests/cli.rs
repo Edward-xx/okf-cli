@@ -1829,6 +1829,28 @@ fn attachment_and_anchor_checks_are_opt_in_and_custom_html_resolves() {
 }
 
 #[test]
+fn literal_ampersand_html_anchors_are_checked() {
+    let f = Fixture::new();
+    fs::write(
+        f.work.path().join("knowledge/anchors.md"),
+        "---\ntype: Note\n---\n[plain](#foo%26bar) [mixed](#a%26b%26tail)\n\n<a id='foo&bar'></a>\n<a name='a&amp;b&tail'></a>\n",
+    )
+    .unwrap();
+    f.bind();
+    let output = f.run(&["validate", "book", "--anchor-style", "headings-v1"]);
+    assert_eq!(output.status.code(), Some(0));
+    let response = value(&output);
+    assert_eq!(response["data"]["anchor_check"]["checked"], 2);
+    assert_eq!(response["data"]["anchor_check"]["skipped"], 0);
+    assert_eq!(response["data"]["anchor_check"]["complete"], true);
+    assert!(!response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "MISSING_ANCHOR"));
+}
+
+#[test]
 fn image_references_are_checked_when_attachments_are_enabled() {
     let f = Fixture::new();
     f.bind();
